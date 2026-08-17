@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/tvTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="WA Bridge - שלב 1+2"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvBuildTag"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:textColor="#999999"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="בודק הרשאות..."
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/btnGrantAccess"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="פתח הגדרות גישה להתראות"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="כתובת ה-Web App (Apps Script):"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/etWebAppUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="https://script.google.com/macros/s/AKfy.../exec"
+        android:inputType="textUri"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btnSaveUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="שמור כתובת" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#DDDDDD"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="שלב 2 - שליחת תשובות לוואטסאפ"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:id="@+id/tvAccessibilityStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="בודק..."
+        android:textSize="16sp"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/btnGrantAccessibility"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="פתח הגדרות נגישות (Accessibility)"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/btnTogglePolling"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="התחל שירות שליחה" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#DDDDDD"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="יומן אירועים (מתעדכן חי):"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/btnCopyLog"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="📋 העתק את כל היומן"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/tvLastCrash"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:textColor="#B00020"
+        android:background="#FDEAEA"
+        android:padding="8dp"
+        android:textIsSelectable="true"
+        android:visibility="gone"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/tvLastEvent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="12sp"
+        android:fontFamily="monospace"
+        android:textColor="#333333"
+        android:background="#F0F0F0"
+        android:padding="8dp" />
+
+</LinearLayout>
+</ScrollView>

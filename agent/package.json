@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Local Windows agent: blocks video/movie apps and reports to the dashboard",
   "main": "src/index.js",
+  "bin": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "build": "pkg . --targets node18-win-x64 --output dist/content-blocker-agent.exe",

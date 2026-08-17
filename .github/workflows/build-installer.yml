@@ -36,6 +36,42 @@ jobs:
         working-directory: agent
         run: npm run build
 
+      - name: Download NSSM (Windows service wrapper)
+        working-directory: agent/installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $headers = @{ "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) GitHubActionsCI" }
+          # Using the 2.24-101 pre-release build, not the 2014 stable 2.24 -
+          # nssm.cc itself recommends this build for Windows 10/Server 2016+
+          # to avoid a known bug where the service fails to start.
+          Invoke-WebRequest -Uri "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip" -OutFile "nssm.zip" -Headers $headers
+
+          Expand-Archive -Path "nssm.zip" -DestinationPath "nssm-extracted" -Force
+
+          # Search recursively instead of assuming an exact folder name, in
+          # case the archive's internal layout ever changes.
+          $nssmExe = Get-ChildItem -Path "nssm-extracted" -Filter "nssm.exe" -Recurse |
+            Where-Object { $_.FullName -like "*win64*" } |
+            Select-Object -First 1
+
+          if (-not $nssmExe) {
+            Write-Error "Could not locate win64/nssm.exe inside the downloaded archive."
+            Get-ChildItem -Path "nssm-extracted" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+          Copy-Item $nssmExe.FullName -Destination "nssm.exe" -Force
+          Remove-Item "nssm.zip", "nssm-extracted" -Recurse -Force
+
+          if (-not (Test-Path "nssm.exe")) {
+            Write-Error "nssm.exe was not created after copy."
+            exit 1
+          }
+
+          Write-Host "nssm.exe ready: $((Get-Item nssm.exe).Length) bytes"
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

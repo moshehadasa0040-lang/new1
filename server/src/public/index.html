@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>דשבורד ניהול - חסימת תוכן</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="login-screen" class="screen">
+  <div class="login-box">
+    <h1>כניסה לניהול</h1>
+    <input type="password" id="password-input" placeholder="סיסמת מנהל" />
+    <button id="login-btn">כניסה</button>
+    <p id="login-error" class="error"></p>
+  </div>
+</div>
+
+<div id="dashboard-screen" class="screen hidden">
+  <header>
+    <h1>מחשבים מנוהלים</h1>
+    <button id="logout-btn" class="secondary">התנתק</button>
+  </header>
+
+  <div id="device-list"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -4,18 +4,6 @@ const api = require('./api');
 const blocker = require('./blocker');
 const { selfUninstall } = require('./uninstall');
 
-// The installer (Inno Setup) invokes the packaged exe with these flags
-// instead of running separate scripts, since pkg bundles everything into
-// one executable. See installer/setup.iss.
-if (process.argv.includes('--install-service')) {
-  require('./service-install');
-  return; // eslint-disable-line no-unreachable
-}
-if (process.argv.includes('--uninstall-service')) {
-  require('./service-uninstall');
-  return; // eslint-disable-line no-unreachable
-}
-
 let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
 

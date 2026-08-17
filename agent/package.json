@@ -1,0 +1,24 @@
+{
+  "name": "content-blocker-agent",
+  "version": "1.0.0",
+  "description": "Local Windows agent: blocks video/movie apps and reports to the dashboard",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "pkg . --targets node18-win-x64 --output dist/content-blocker-agent.exe",
+    "service:install": "node src/service-install.js",
+    "service:uninstall": "node src/service-uninstall.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "node-windows": "^1.0.0-beta.8"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "assets": [],
+    "targets": ["node18-win-x64"],
+    "outputPath": "dist"
+  }
+}

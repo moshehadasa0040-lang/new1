@@ -58,6 +58,10 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppNoConsole 1"; F
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 
 [UninstallRun]
-; Cleanly stops and removes the service before the uninstaller deletes files.
-Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated
-Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated
+; Order matters here: stop the service FIRST, so its periodic file-lock
+; scan can't re-lock a file in the instant between --unlock-files removing
+; the deny ACE and the service being removed. Then restore file access,
+; then remove the service registration entirely.
+Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Stopping service..."
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--unlock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Restoring file access..."
+Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated; StatusMsg: "Removing service..."

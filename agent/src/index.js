@@ -6,6 +6,22 @@ const fileLock = require('./fileLock');
 const logger = require('./logger');
 const { selfUninstall } = require('./uninstall');
 
+// Support mode: the installer's uninstaller invokes the packaged exe with
+// this flag, BEFORE deleting any files, so that locally-locked video files
+// get their NTFS permissions restored even when someone uninstalls the
+// normal way (Windows "Apps" settings / Add-Remove Programs) rather than
+// through the dashboard's "uninstall" button. Without this, removing the
+// software any other way would leave video files permanently locked -
+// which would be a real problem for someone's own legitimate files.
+if (process.argv.includes('--unlock-files')) {
+  fileLock
+    .unlockAll()
+    .then(() => process.exit(0))
+    .catch(() => process.exit(0)); // exit cleanly either way - this must
+    // never block or fail the uninstall itself.
+  return; // eslint-disable-line no-unreachable
+}
+
 let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
 

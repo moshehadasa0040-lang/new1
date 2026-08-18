@@ -133,7 +133,8 @@ async function main() {
   const state = await ensureRegistered();
   deviceId = state.deviceId;
   deviceToken = state.deviceToken;
-  logger.log(`Agent starting. Device ID: ${deviceId}`);
+  const version = require('../package.json').version;
+  logger.log(`Agent v${version} starting. Device ID: ${deviceId}. Blocked extensions: ${config.MOVIE_EXTENSIONS.join(', ')}`);
 
   blocker.start();
 

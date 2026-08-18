@@ -67,6 +67,7 @@ function renderDevices(devices) {
           <div class="device-name">${escapeHtml(d.name)}</div>
           <div class="device-meta">
             ${d.hostname ? escapeHtml(d.hostname) + ' · ' : ''}
+            ${d.agent_version ? 'גרסה ' + escapeHtml(d.agent_version) + ' · ' : ''}
             נראה לאחרונה: ${d.last_seen ? new Date(d.last_seen).toLocaleString('he-IL') : 'מעולם לא'}
           </div>
         </div>

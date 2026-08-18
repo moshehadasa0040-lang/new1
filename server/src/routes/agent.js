@@ -11,15 +11,17 @@ const OFFLINE_AFTER_SECONDS = 90;
 
 // POST /api/agent/register
 // Called once, the first time the agent starts on a new machine.
-// Body: { hardwareId: string, hostname: string, agentVersion: string }
+// Body: { hardwareId, hostname, deviceName, agentVersion }
 // Returns: { deviceId, deviceToken }  -> the agent must store these locally
 router.post('/register', async (req, res) => {
-  const { hardwareId, hostname, agentVersion } = req.body || {};
+  const { hardwareId, hostname, deviceName, agentVersion } = req.body || {};
   if (!hardwareId) return res.status(400).json({ error: 'hardwareId_required' });
 
   // Re-registration with the same hardware id (e.g. agent reinstalled but
   // somehow kept no local state) reuses the existing device instead of
-  // creating a duplicate "ghost" device.
+  // creating a duplicate "ghost" device. Deliberately does NOT touch
+  // `name` here - if the admin already renamed it in the dashboard, we
+  // don't want every restart to silently overwrite that.
   const existing = await store.getDevice(hardwareId);
   if (existing) {
     await store.upsertDevice(hardwareId, {
@@ -35,7 +37,9 @@ router.post('/register', async (req, res) => {
   await store.upsertDevice(hardwareId, {
     id: hardwareId,
     device_token: deviceToken,
-    name: hostname || 'מחשב חדש',
+    // Prefer the friendly name entered during installation, if provided,
+    // over the raw Windows computer name.
+    name: (deviceName && deviceName.trim()) || hostname || 'מחשב חדש',
     hostname: hostname || '',
     status: 'online',
     last_seen: new Date().toISOString(),

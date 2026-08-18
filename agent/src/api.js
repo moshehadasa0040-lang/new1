@@ -1,6 +1,7 @@
 const axios = require('axios');
 const os = require('os');
 const config = require('./config');
+const identity = require('./identity');
 
 function client(deviceId, deviceToken) {
   return axios.create({
@@ -13,9 +14,14 @@ function client(deviceId, deviceToken) {
 }
 
 async function register(hardwareId) {
+  const customName = identity.getCustomDeviceName();
   const res = await client().post('/api/agent/register', {
     hardwareId,
     hostname: os.hostname(),
+    // The friendly name entered during installation (see setup.iss), if
+    // any - lets the dashboard show something meaningful instead of the
+    // raw Windows computer name.
+    deviceName: customName,
     agentVersion: require('../package.json').version
   });
   return res.data; // { deviceId, deviceToken }

@@ -41,6 +41,51 @@ Source: "..\dist\content-blocker-agent.exe"; DestDir: "{app}"; Flags: ignorevers
 Source: "nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-helper.bat"; DestDir: "{app}"; Flags: ignoreversion
 
+[Code]
+var
+  DeviceNamePage: TInputQueryWizardPage;
+
+function GetComputerNameString(): String;
+begin
+  // COMPUTERNAME is a standard Windows environment variable - GetEnv is a
+  // built-in Inno Setup Pascal Script function, unlike the raw Win32
+  // GetComputerName API (which isn't available without an external DLL
+  // import this script deliberately avoids for simplicity).
+  Result := GetEnv('COMPUTERNAME');
+  if Result = '' then
+    Result := 'מחשב חדש';
+end;
+
+procedure InitializeWizard;
+begin
+  // Custom page asking for a friendly name for this machine (e.g. "Living
+  // Room PC", "Kids' Room"). Shown to the dashboard instead of the raw
+  // Windows computer name, so it's actually possible to tell which
+  // physical machine each entry in the device list refers to.
+  DeviceNamePage := CreateInputQueryPage(wpSelectDir,
+    'זיהוי המחשב', 'איך שם המחשב הזה יופיע בדשבורד?',
+    'תן שם שיעזור לך לזהות את המחשב הזה ברשימת המחשבים בדשבורד (למשל: "מחשב סלון", "חדר ילדים"). ניתן לשנות זאת מאוחר יותר גם דרך הדשבורד עצמו.');
+  DeviceNamePage.Add('שם המחשב:', False);
+  DeviceNamePage.Values[0] := GetComputerNameString();
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  DeviceName: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    // Written to a plain text file the agent reads at first registration
+    // (see agent/src/identity.js). Saved as Unicode (UTF-16LE with BOM) -
+    // Inno Setup's Pascal Script has no native UTF-8 writer, and ANSI mode
+    // would corrupt Hebrew text. The agent reads it back as utf16le.
+    DeviceName := Trim(DeviceNamePage.Values[0]);
+    if DeviceName = '' then
+      DeviceName := GetComputerNameString();
+    SaveStringToFile(ExpandConstant('{app}\device-name.txt'), DeviceName, True);
+  end;
+end;
+
 [Run]
 ; Registers the packaged exe as a Windows service via NSSM. First removes
 ; any pre-existing service with the same name (ignoring errors if none

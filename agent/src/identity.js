@@ -45,4 +45,12 @@ function saveState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-module.exports = { getHardwareId, loadState, saveState };
+function clearState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
+  } catch (e) {
+    // best-effort
+  }
+}
+
+module.exports = { getHardwareId, loadState, saveState, clearState };

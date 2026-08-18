@@ -42,15 +42,20 @@ Source: "nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-helper.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Run]
-; Registers the packaged exe as a Windows service via NSSM, points it at
-; the install folder (so it can find its local data files), sets it to
-; start automatically on boot, and starts it immediately.
-Filename: "{app}\nssm.exe"; Parameters: "install {#MyServiceName} ""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated
+; Registers the packaged exe as a Windows service via NSSM. First removes
+; any pre-existing service with the same name (ignoring errors if none
+; exists) - installing on top of a leftover registration from a previous
+; install/uninstall cycle silently fails, and Inno Setup doesn't surface
+; that failure by default, leaving the service simply not running with no
+; visible error. Then installs fresh and configures it.
+Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."
+Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."
+Filename: "{app}\nssm.exe"; Parameters: "install {#MyServiceName} ""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing service..."
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppDirectory ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE_AUTO_START"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit Default Restart"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppNoConsole 1"; Flags: runhidden waituntilterminated
-Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 
 [UninstallRun]
 ; Cleanly stops and removes the service before the uninstaller deletes files.

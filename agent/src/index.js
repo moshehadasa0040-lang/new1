@@ -90,6 +90,24 @@ async function heartbeatLoop() {
       await applyCommand(cmd);
     }
   } catch (err) {
+    if (err.response && err.response.status === 401) {
+      // Our locally-saved device id/token is no longer recognized by the
+      // server - most likely the device was deleted from the dashboard, or
+      // the server's data store was reset. Rather than fail forever with
+      // the same stale credentials, wipe local identity and register as a
+      // (functionally) new device on the next heartbeat.
+      logger.log('Server rejected credentials (401) - re-registering as a new device.');
+      identity.clearState();
+      try {
+        const state = await ensureRegistered();
+        deviceId = state.deviceId;
+        deviceToken = state.deviceToken;
+        logger.log(`Re-registered. New device ID: ${deviceId}`);
+      } catch (reregisterErr) {
+        logger.log(`Re-registration failed: ${reregisterErr.message}`);
+      }
+      return;
+    }
     // Network hiccup / server temporarily down - just try again next cycle.
     logger.log(`Heartbeat failed: ${err.message}`);
   }

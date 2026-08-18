@@ -15,7 +15,7 @@ const { selfUninstall } = require('./uninstall');
 // which would be a real problem for someone's own legitimate files.
 if (process.argv.includes('--unlock-files')) {
   fileLock
-    .unlockAll()
+    .unlockAllByScan()
     .then(() => process.exit(0))
     .catch(() => process.exit(0)); // exit cleanly either way - this must
     // never block or fail the uninstall itself.
@@ -84,10 +84,10 @@ async function applyCommand(cmd) {
       }
       break;
     case 'uninstall':
-      logger.log('Uninstall command received - unlocking files, then stopping and removing service.');
-      // Always restore file access before removing the software - we never
-      // want to leave someone's files permanently inaccessible.
-      await fileLock.unlockAll();
+      logger.log('Uninstall command received - unlocking files (full scan), then stopping and removing service.');
+      // Full sweep, not just tracked files - same reasoning as the
+      // --unlock-files path used by the normal Windows uninstaller.
+      await fileLock.unlockAllByScan();
       await api.ack(deviceId, deviceToken, cmd.id, 'התוכנה הוסרה לפי בקשה מהדשבורד');
       await selfUninstall();
       process.exit(0);

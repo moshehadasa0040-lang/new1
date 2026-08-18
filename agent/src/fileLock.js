@@ -163,9 +163,8 @@ async function lockAll(shouldContinue = () => true) {
 }
 
 // Reverses every lock this agent has ever applied (tracked in
-// locked-files.json). Used for temporary unlock, and MUST be called before
-// uninstall - we never want to leave a user's files permanently
-// inaccessible after the software is removed.
+// locked-files.json). Used for temporary unlock (fast - only touches known
+// locked files).
 async function unlockAll() {
   const files = [...lockedFiles];
   for (const file of files) {
@@ -176,4 +175,30 @@ async function unlockAll() {
   return files.length;
 }
 
-module.exports = { lockAll, unlockAll };
+// Full sweep, independent of local tracking: re-scans every drive for
+// video files and removes the deny ACEs from EVERY one found, regardless
+// of whether our local locked-files.json knows about it.
+//
+// Used specifically for uninstall, instead of the tracked unlockAll()
+// above - tracking can have gaps (e.g. the service gets stopped mid-scan,
+// before that scan's progress was ever saved to disk), and uninstall is
+// exactly the one moment where "we might have missed one" is unacceptable:
+// it's the last chance to restore someone's access to their own files.
+// Slower than unlockAll(), but that's fine here - it only runs once, on
+// the way out.
+async function unlockAllByScan() {
+  const drives = await getScannableDrives();
+  let total = 0;
+  for (const drive of drives) {
+    const files = await findVideoFiles(drive);
+    for (const file of files) {
+      await unlockFile(file);
+      total += 1;
+    }
+  }
+  saveLockedSet(lockedFiles);
+  logger.log(`Uninstall sweep: unlocked ${total} video file(s) across ${drives.length} drive(s).`);
+  return total;
+}
+
+module.exports = { lockAll, unlockAll, unlockAllByScan };

@@ -129,12 +129,30 @@ async function unlockFile(filePath) {
 // repeatedly (e.g. on a timer) - already-locked files are just re-locked
 // (a no-op in practice), and this is how newly added/copied video files
 // get caught without needing a live filesystem watcher on every drive.
-async function lockAll() {
+//
+// `shouldContinue` is checked before locking EACH individual file, not just
+// once at the start. A full-drive scan can take a minute or more - without
+// this, a scan that started while blocking was on would keep locking files
+// for its entire duration even if the admin unlocked the device moments
+// after the scan began, silently undoing the unlock once the (already
+// in-flight) scan finished. Pass `() => blocker.isBlocking()` from the
+// caller so an unlock mid-scan takes effect within a single file's worth of
+// delay, not a full scan's worth.
+async function lockAll(shouldContinue = () => true) {
   const drives = await getScannableDrives();
   let total = 0;
   for (const drive of drives) {
+    if (!shouldContinue()) {
+      logger.log('File-lock scan stopped early: unlocked mid-scan.');
+      break;
+    }
     const files = await findVideoFiles(drive);
     for (const file of files) {
+      if (!shouldContinue()) {
+        logger.log('File-lock scan stopped early: unlocked mid-scan.');
+        saveLockedSet(lockedFiles);
+        return total;
+      }
       const ok = await lockFile(file);
       if (ok) total += 1;
     }

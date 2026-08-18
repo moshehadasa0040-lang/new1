@@ -24,6 +24,7 @@ if (process.argv.includes('--unlock-files')) {
 
 let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
+let appliedUnlockUntil = null; // dedup guard - avoid reapplying the same unlock on every heartbeat
 
 async function ensureRegistered() {
   let state = identity.loadState();
@@ -38,8 +39,9 @@ async function ensureRegistered() {
 }
 
 async function reLockNow() {
+  appliedUnlockUntil = null;
   blocker.setBlocking(true);
-  await fileLock.lockAll();
+  await fileLock.lockAll(() => blocker.isBlocking());
 }
 
 async function temporarilyUnlockNow() {
@@ -54,6 +56,7 @@ async function scheduleReLock(untilIso) {
     await reLockNow();
     return;
   }
+  appliedUnlockUntil = untilIso;
   await temporarilyUnlockNow();
   temporaryUnlockTimer = setTimeout(reLockNow, msRemaining);
 }
@@ -98,8 +101,19 @@ async function heartbeatLoop() {
   try {
     const { unlockedUntil, commands } = await api.heartbeat(deviceId, deviceToken);
 
+    // The server also reports the current unlock deadline on every
+    // heartbeat (not just via the one-time 'unlock' command) so that if
+    // the agent process restarts mid-unlock (crash, reboot), it picks the
+    // active unlock back up instead of defaulting to locked. Only actually
+    // re-apply it if it's a NEW deadline we haven't already scheduled for -
+    // otherwise every single heartbeat during a 15-minute unlock window
+    // would redundantly re-run the whole unlock flow.
     if (unlockedUntil && new Date(unlockedUntil) > new Date()) {
-      await scheduleReLock(unlockedUntil);
+      if (appliedUnlockUntil !== unlockedUntil) {
+        await scheduleReLock(unlockedUntil);
+      }
+    } else {
+      appliedUnlockUntil = null;
     }
 
     for (const cmd of commands) {
@@ -141,10 +155,10 @@ async function main() {
   // Initial full scan+lock of existing video files - don't block startup
   // on this (it can take a while on a large disk), let it run in the
   // background while process-based blocking is already active.
-  fileLock.lockAll().catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
+  fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
   setInterval(() => {
     if (blocker.isBlocking()) {
-      fileLock.lockAll().catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
+      fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
     }
   }, config.FILE_LOCK_SCAN_INTERVAL_MS);
 

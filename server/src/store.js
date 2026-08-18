@@ -48,6 +48,7 @@ async function deleteDevice(id) {
   pipeline.del(deviceKey(id));
   pipeline.del(`device:${id}:pending_cmds`);
   pipeline.del(`device:${id}:events`);
+  pipeline.del(`device:${id}:logs`);
   pipeline.srem('devices:index', id);
   await pipeline.exec();
 }
@@ -107,6 +108,24 @@ async function listEvents(deviceId) {
   return raw.map((e) => JSON.parse(e));
 }
 
+// --- Logs --------------------------------------------------------------------
+// The agent only uploads logs when asked (via a queued 'send_logs' command),
+// so we just keep the single most recent upload per device rather than a
+// growing history.
+
+async function saveLogs(deviceId, content) {
+  await redis.hset(`device:${deviceId}:logs`, {
+    content,
+    updated_at: new Date().toISOString()
+  });
+}
+
+async function getLogs(deviceId) {
+  const data = await redis.hgetall(`device:${deviceId}:logs`);
+  if (!data || !data.content) return null;
+  return data;
+}
+
 module.exports = {
   getDevice,
   upsertDevice,
@@ -116,5 +135,7 @@ module.exports = {
   drainPendingCommands,
   markCommandDone,
   addEvent,
-  listEvents
+  listEvents,
+  saveLogs,
+  getLogs
 };

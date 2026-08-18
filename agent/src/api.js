@@ -30,4 +30,8 @@ async function ack(deviceId, deviceToken, commandId, message) {
   await client(deviceId, deviceToken).post('/api/agent/ack', { commandId, message });
 }
 
-module.exports = { register, heartbeat, ack };
+async function sendLogs(deviceId, deviceToken, logs) {
+  await client(deviceId, deviceToken).post('/api/agent/logs', { logs });
+}
+
+module.exports = { register, heartbeat, ack, sendLogs };

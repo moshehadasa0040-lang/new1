@@ -81,4 +81,13 @@ router.post('/ack', requireDevice, async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/agent/logs
+// The agent uploads its recent local log lines here, in response to a
+// 'send_logs' command queued from the dashboard.
+router.post('/logs', requireDevice, async (req, res) => {
+  const { logs } = req.body || {};
+  await store.saveLogs(req.device.id, logs || '');
+  res.json({ ok: true });
+});
+
 module.exports = { router, OFFLINE_AFTER_SECONDS };

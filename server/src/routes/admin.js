@@ -86,6 +86,29 @@ router.post('/devices/:id/uninstall', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Logs --------------------------------------------------------------------
+// Queues a request; the agent uploads its log on its next heartbeat.
+router.post('/devices/:id/request-logs', requireAdmin, async (req, res) => {
+  await store.queueCommand(req.params.id, 'send_logs');
+  res.json({ ok: true });
+});
+
+router.get('/devices/:id/logs', requireAdmin, async (req, res) => {
+  const logs = await store.getLogs(req.params.id);
+  res.json({ logs });
+});
+
+// --- Update blocked process list --------------------------------------------
+router.post('/devices/:id/update-rules', requireAdmin, async (req, res) => {
+  const { blockedProcesses } = req.body || {};
+  if (!Array.isArray(blockedProcesses) || !blockedProcesses.length) {
+    return res.status(400).json({ error: 'blockedProcesses_required' });
+  }
+  await store.queueCommand(req.params.id, 'update_rules', { blockedProcesses });
+  await store.addEvent(req.params.id, `רשימת החסימה עודכנה: ${blockedProcesses.join(', ')}`);
+  res.json({ ok: true });
+});
+
 // --- Remove from dashboard -------------------------------------------------
 router.delete('/devices/:id', requireAdmin, async (req, res) => {
   await store.deleteDevice(req.params.id);

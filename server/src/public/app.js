@@ -79,6 +79,9 @@ function renderDevices(devices) {
         <div class="device-actions">
           <button class="unlock-btn">פתח ל-15 דק'</button>
           ${isUnlocked ? '<button class="lock-btn secondary">נעל מיד</button>' : ''}
+          <button class="rules-btn secondary">ערוך רשימת חסימה</button>
+          <button class="logs-btn secondary">בקש לוגים</button>
+          <button class="download-logs-btn secondary">הורד לוגים</button>
           <button class="uninstall-btn danger">הסר תוכנה</button>
           <button class="remove-btn secondary">מחק מהדשבורד</button>
         </div>
@@ -100,6 +103,37 @@ function renderDevices(devices) {
     card.querySelector('.lock-btn')?.addEventListener('click', async () => {
       await api(`/api/admin/devices/${id}/lock`, { method: 'POST' });
       loadDevices();
+    });
+    card.querySelector('.rules-btn')?.addEventListener('click', async () => {
+      const current = prompt(
+        'רשימת תהליכים לחסימה, מופרדים בפסיק (למשל: vlc.exe,chrome.exe):',
+        'vlc.exe,wmplayer.exe,mpc-hc64.exe,Video.UI.exe,MediaPlayer.exe'
+      );
+      if (!current) return;
+      const blockedProcesses = current.split(',').map((s) => s.trim()).filter(Boolean);
+      await api(`/api/admin/devices/${id}/update-rules`, {
+        method: 'POST',
+        body: JSON.stringify({ blockedProcesses })
+      });
+      alert('הרשימה תתעדכן בפעם הבאה שהמחשב יתחבר (עד דקה).');
+    });
+    card.querySelector('.logs-btn')?.addEventListener('click', async () => {
+      await api(`/api/admin/devices/${id}/request-logs`, { method: 'POST' });
+      alert('בקשת לוגים נשלחה. המתן כדקה, ואז לחץ "הורד לוגים".');
+    });
+    card.querySelector('.download-logs-btn')?.addEventListener('click', async () => {
+      const { logs } = await api(`/api/admin/devices/${id}/logs`);
+      if (!logs || !logs.content) {
+        alert('אין עדיין לוגים. לחץ קודם "בקש לוגים" והמתן כדקה.');
+        return;
+      }
+      const blob = new Blob([logs.content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${id}-logs.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
     });
     card.querySelector('.uninstall-btn')?.addEventListener('click', async () => {
       if (!confirm('להסיר את התוכנה לגמרי מהמחשב הזה?')) return;

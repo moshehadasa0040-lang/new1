@@ -94,4 +94,15 @@ router.post('/logs', requireDevice, async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/agent/unregister
+// Called by the agent itself right before it removes itself from a
+// machine (both the normal Windows uninstall path and the dashboard's
+// remote 'uninstall' command) - deletes the device from the dashboard
+// entirely, instead of leaving a stale "offline" entry behind forever
+// that someone would otherwise have to notice and clean up by hand.
+router.post('/unregister', requireDevice, async (req, res) => {
+  await store.deleteDevice(req.device.id);
+  res.json({ ok: true });
+});
+
 module.exports = { router, OFFLINE_AFTER_SECONDS };

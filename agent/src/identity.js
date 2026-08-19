@@ -54,19 +54,17 @@ function clearState() {
 }
 
 // Reads the friendly name the installer asked for (see setup.iss), written
-// as UTF-16LE text (with BOM) next to the agent exe at install time -
-// that's what Inno Setup's SaveStringToFile produces in "Unicode" mode,
-// needed so Hebrew names don't get corrupted (Inno has no native UTF-8
-// writer, and ANSI mode uses the system codepage instead). Returns null if
-// absent (e.g. running via `node src/index.js` during development, or an
-// older install that predates this feature) - callers should fall back to
-// the OS hostname in that case.
+// as UTF-8 text (via Inno Setup's SaveStringsToUTF8File) next to the agent
+// exe at install time. Returns null if absent (e.g. running via `node
+// src/index.js` during development, or an older install that predates
+// this feature) - callers should fall back to the OS hostname in that
+// case.
 function getCustomDeviceName() {
   try {
     const filePath = path.join(path.dirname(process.execPath), 'device-name.txt');
     if (fs.existsSync(filePath)) {
-      let name = fs.readFileSync(filePath, 'utf16le');
-      name = name.replace(/^\uFEFF/, '').trim(); // strip BOM if present
+      let name = fs.readFileSync(filePath, 'utf8');
+      name = name.replace(/^\uFEFF/, '').split(/\r?\n/)[0].trim(); // strip BOM + any trailing newline
       if (name) return name;
     }
   } catch (e) {

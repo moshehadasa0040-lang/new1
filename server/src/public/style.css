@@ -89,8 +89,17 @@ button:hover { opacity: 0.9; }
   border-radius: 20px;
   font-weight: 500;
 }
-.status-online { background: #eaf3de; color: #27500a; }
-.status-offline { background: #f1efe8; color: #5f5e5a; }
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.status-online { background: #eaf3de; color: #1c4a06; }
+.status-online .status-dot { background: #2fa82f; box-shadow: 0 0 6px 1px rgba(47,168,47,0.6); }
+.status-offline { background: #fbe6e4; color: #8a1f14; }
+.status-offline .status-dot { background: #d63c2c; box-shadow: 0 0 6px 1px rgba(214,60,44,0.5); }
 .status-unlocked { background: #faeeda; color: #633806; }
 
 .device-actions { display: flex; gap: 8px; flex-wrap: wrap; }

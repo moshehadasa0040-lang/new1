@@ -73,7 +73,7 @@ function renderDevices(devices) {
         </div>
         <div>
           <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
-            ${isOnline ? '● מחובר' : '○ מנותק'}
+            <span class="status-dot"></span>${isOnline ? 'מחובר' : 'מנותק'}
           </span>
           ${isUnlocked ? '<span class="status-badge status-unlocked">פתוח זמנית</span>' : ''}
         </div>

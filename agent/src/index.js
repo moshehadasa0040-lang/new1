@@ -14,11 +14,27 @@ const { selfUninstall } = require('./uninstall');
 // software any other way would leave video files permanently locked -
 // which would be a real problem for someone's own legitimate files.
 if (process.argv.includes('--unlock-files')) {
-  fileLock
-    .unlockAllByScan()
-    .then(() => process.exit(0))
-    .catch(() => process.exit(0)); // exit cleanly either way - this must
-    // never block or fail the uninstall itself.
+  (async () => {
+    try {
+      await fileLock.unlockAllByScan();
+    } catch (e) {
+      // best-effort - don't let a scan failure block the uninstall
+    }
+    // Also removes the device from the dashboard entirely, instead of
+    // leaving a stale "offline" card that someone has to notice and clean
+    // up by hand. Uses whatever credentials were saved locally, if any.
+    try {
+      const state = identity.loadState();
+      if (state && state.deviceId && state.deviceToken) {
+        await api.unregister(state.deviceId, state.deviceToken);
+      }
+    } catch (e) {
+      // Server unreachable, or already removed - not fatal, uninstall
+      // continues regardless.
+    }
+    identity.clearState();
+    process.exit(0);
+  })();
   return; // eslint-disable-line no-unreachable
 }
 
@@ -89,6 +105,14 @@ async function applyCommand(cmd) {
       // --unlock-files path used by the normal Windows uninstaller.
       await fileLock.unlockAllByScan();
       await api.ack(deviceId, deviceToken, cmd.id, 'התוכנה הוסרה לפי בקשה מהדשבורד');
+      // Remove the device from the dashboard too, right before this
+      // process exits - otherwise it would just sit there forever showing
+      // "offline" after the software is already gone.
+      try {
+        await api.unregister(deviceId, deviceToken);
+      } catch (e) {
+        // not fatal - proceed with the actual uninstall regardless
+      }
       await selfUninstall();
       process.exit(0);
       break;

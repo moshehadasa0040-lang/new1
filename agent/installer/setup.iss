@@ -72,17 +72,26 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   DeviceName: String;
+  Lines: TArrayOfString;
 begin
   if CurStep = ssPostInstall then
   begin
     // Written to a plain text file the agent reads at first registration
-    // (see agent/src/identity.js). Saved as Unicode (UTF-16LE with BOM) -
-    // Inno Setup's Pascal Script has no native UTF-8 writer, and ANSI mode
-    // would corrupt Hebrew text. The agent reads it back as utf16le.
+    // (see agent/src/identity.js). Uses SaveStringsToUTF8File - the real
+    // Inno Setup function for writing proper UTF-8 text. An earlier
+    // version of this script mistakenly passed a 3rd boolean argument to
+    // SaveStringToFile expecting it to mean "write as Unicode" - that
+    // parameter doesn't exist on that function at all (it only takes
+    // FileName, S, Append), so the boolean was silently treated as the
+    // Append flag instead, and the string got written as raw ANSI bytes
+    // in the system codepage - producing garbled text for any name with
+    // Hebrew characters.
     DeviceName := Trim(DeviceNamePage.Values[0]);
     if DeviceName = '' then
       DeviceName := GetComputerNameString();
-    SaveStringToFile(ExpandConstant('{app}\device-name.txt'), DeviceName, True);
+    SetArrayLength(Lines, 1);
+    Lines[0] := DeviceName;
+    SaveStringsToUTF8File(ExpandConstant('{app}\device-name.txt'), Lines, False);
   end;
 end;
 

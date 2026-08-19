@@ -98,14 +98,21 @@ function denyArgs() {
   return DENY_SIDS.map((sid) => `/deny "${sid}:(R)"`).join(' ');
 }
 
-function removeDenyArgs() {
-  return DENY_SIDS.map((sid) => `/remove:d "${sid}"`).join(' ');
-}
-
 async function lockFile(filePath) {
+  // Skip files we already believe are locked - re-running icacls /deny on
+  // an already-denied file doesn't update anything in place, it just adds
+  // ANOTHER explicit deny entry for the same account. After enough repeat
+  // scans (this runs every 3 minutes, for as long as the agent is
+  // installed) the same file can end up with a pile of duplicate deny
+  // entries, which turned out to be exactly why /remove:d later failed to
+  // fully restore access - see unlockFile() below.
+  if (lockedFiles.has(filePath)) return true;
   try {
     await execAsync(`icacls "${filePath}" ${denyArgs()} /Q`);
     lockedFiles.add(filePath);
+    saveLockedSet(lockedFiles); // persist immediately, not just at the end
+    // of the whole scan - so a service stop mid-scan doesn't lose track of
+    // files already locked in that same scan.
     return true;
   } catch (e) {
     // File may be in use, deleted mid-scan, or otherwise inaccessible -
@@ -116,7 +123,14 @@ async function lockFile(filePath) {
 
 async function unlockFile(filePath) {
   try {
-    await execAsync(`icacls "${filePath}" ${removeDenyArgs()} /Q`);
+    // /reset restores this file's permissions to whatever it inherits
+    // from its parent folder, wiping out EVERY explicit entry we've ever
+    // added to it - including any duplicate deny entries that piled up
+    // from repeated lock cycles (see lockFile() above). Far more reliable
+    // than /remove:d, which only removes entries it can find an exact
+    // match for and can leave residual duplicates behind, causing "Access
+    // Denied" even after we believed the file was fully unlocked.
+    await execAsync(`icacls "${filePath}" /reset /Q`);
   } catch (e) {
     // If the file no longer exists, there's nothing to unlock - fine.
   }

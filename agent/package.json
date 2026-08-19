@@ -1,6 +1,6 @@
 {
   "name": "content-blocker-agent",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Local Windows agent: blocks video/movie apps and reports to the dashboard",
   "main": "src/index.js",
   "bin": "src/index.js",

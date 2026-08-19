@@ -81,10 +81,27 @@ async function getScannableDrives() {
 async function findVideoFiles(drive) {
   const includeList = config.MOVIE_EXTENSIONS.map((ext) => `*${ext}`).join(',');
   try {
-    const { stdout } = await execAsync(
-      `powershell -NoProfile -Command "Get-ChildItem -Path '${drive}\\' -Recurse -File -Include ${includeList} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName"`,
-      { maxBuffer: 1024 * 1024 * 32 }
-    );
+    // Setting $ErrorActionPreference globally (not just -ErrorAction on
+    // the cmdlet itself) is needed here: in practice, "Access is denied"
+    // errors hit while RECURSING INTO a protected system folder (e.g.
+    // System Volume Information) can still surface as a terminating error
+    // that kills the whole pipeline and makes powershell.exe exit non-zero
+    // - even with -ErrorAction SilentlyContinue on Get-ChildItem itself.
+    // That previously caused the entire scan to come back completely
+    // empty (0 files) if it hit even ONE inaccessible folder anywhere on
+    // the whole drive - which is exactly what happened during a real
+    // uninstall attempt (logged as "Access is denied", followed by
+    // "unlocked 0 video file(s)"). The try/catch + explicit `exit 0`
+    // below guarantee the process always exits cleanly and returns
+    // whatever it already found, instead of discarding all of it over a
+    // single inaccessible subfolder.
+    const psScript =
+      "$ErrorActionPreference = 'SilentlyContinue'; " +
+      `try { Get-ChildItem -Path '${drive}\\' -Recurse -File -Include ${includeList} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName } catch {} ` +
+      'exit 0';
+    const { stdout } = await execAsync(`powershell -NoProfile -Command "${psScript}"`, {
+      maxBuffer: 1024 * 1024 * 32
+    });
     return stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   } catch (e) {
     logger.log(`Scan failed on ${drive}: ${e.message}`);
@@ -191,16 +208,22 @@ async function unlockAll() {
 
 // Full sweep, independent of local tracking: re-scans every drive for
 // video files and removes the deny ACEs from EVERY one found, regardless
-// of whether our local locked-files.json knows about it.
+// of whether our local locked-files.json knows about it. Also unlocks
+// every TRACKED file as a safety net first - belt and suspenders: if the
+// scan itself fails for any reason (a real failure mode seen in practice -
+// a single inaccessible system folder anywhere on the drive can abort the
+// whole recursive scan and return zero results), the tracked files still
+// get unlocked regardless.
 //
 // Used specifically for uninstall, instead of the tracked unlockAll()
-// above - tracking can have gaps (e.g. the service gets stopped mid-scan,
-// before that scan's progress was ever saved to disk), and uninstall is
-// exactly the one moment where "we might have missed one" is unacceptable:
-// it's the last chance to restore someone's access to their own files.
-// Slower than unlockAll(), but that's fine here - it only runs once, on
-// the way out.
+// above alone - tracking can have gaps of its own (e.g. a brand new file
+// nobody has scanned yet), and uninstall is exactly the one moment where
+// "we might have missed one" is unacceptable: it's the last chance to
+// restore someone's access to their own files. Slower than unlockAll(),
+// but that's fine here - it only runs once, on the way out.
 async function unlockAllByScan() {
+  const trackedCount = await unlockAll();
+
   const drives = await getScannableDrives();
   let total = 0;
   for (const drive of drives) {
@@ -211,8 +234,10 @@ async function unlockAllByScan() {
     }
   }
   saveLockedSet(lockedFiles);
-  logger.log(`Uninstall sweep: unlocked ${total} video file(s) across ${drives.length} drive(s).`);
-  return total;
+  logger.log(
+    `Uninstall sweep: unlocked ${total} video file(s) across ${drives.length} drive(s) (plus ${trackedCount} from tracked state).`
+  );
+  return total + trackedCount;
 }
 
 module.exports = { lockAll, unlockAll, unlockAllByScan };

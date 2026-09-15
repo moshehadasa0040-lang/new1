@@ -1,3 +1,6 @@
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const path = require('path');
 const config = require('./config');
 const identity = require('./identity');
 const api = require('./api');
@@ -5,6 +8,30 @@ const blocker = require('./blocker');
 const fileLock = require('./fileLock');
 const logger = require('./logger');
 const { selfUninstall } = require('./uninstall');
+const execAsync = promisify(exec);
+
+// Self-heal for machines installed with v1.8.0 or earlier, whose NSSM
+// service registration only has "AppExit Default Restart" with no
+// exit-code-0 override. On those installs, the dashboard's remote
+// "uninstall" command (which makes this process call process.exit(0) on
+// itself, see applyCommand() below) gets undone: NSSM treats that self-exit
+// as an unexpected crash and immediately restarts the agent, which then
+// re-registers with the server (same hardware-derived ID) and can re-lock
+// files before uninstall-helper.bat gets a chance to run "nssm stop". New
+// installs get this set correctly at install time (see setup.iss), but
+// existing installs won't pick that up until the service itself re-applies
+// it - which is what this does, once, on every normal startup. Cheap and
+// idempotent: if it's already set correctly this is a harmless no-op.
+async function ensureNssmExitPolicy() {
+  try {
+    const nssmPath = path.join(path.dirname(process.execPath), 'nssm.exe');
+    await execAsync(`"${nssmPath}" set ${config.SERVICE_NAME} AppExit 0 Exit`);
+  } catch (e) {
+    // Not running under NSSM (e.g. `node src/index.js` in dev), nssm.exe
+    // missing, or not installed as this exact service name - not fatal,
+    // the agent still runs fine either way.
+  }
+}
 
 // Support mode: the installer's uninstaller invokes the packaged exe with
 // this flag, BEFORE deleting any files, so that locally-locked video files
@@ -168,6 +195,7 @@ async function heartbeatLoop() {
 }
 
 async function main() {
+  await ensureNssmExitPolicy();
   const state = await ensureRegistered();
   deviceId = state.deviceId;
   deviceToken = state.deviceToken;

@@ -108,6 +108,21 @@ Filename: "{app}\nssm.exe"; Parameters: "install {#MyServiceName} ""{app}\{#MyAp
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppDirectory ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE_AUTO_START"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit Default Restart"; Flags: runhidden waituntilterminated
+; Override for exit code 0 specifically: the dashboard's remote "uninstall"
+; command makes the running agent process call process.exit(0) on itself
+; (see agent/src/index.js, case 'uninstall') BEFORE uninstall-helper.bat
+; gets a chance to run "nssm stop". Without this override, NSSM sees that
+; self-exit as an unexpected crash (it never issued the stop itself) and
+; applies the Default=Restart policy above - respawning the agent within
+; milliseconds, long before the helper's ~3s wait is up. That respawned
+; instance re-registers with the server using the same hardware-derived
+; ID (see identity.js) and can re-lock files, making the dashboard
+; "uninstall" look like it silently failed or half-reverted itself. This
+; line tells NSSM that exit code 0 specifically means "the app finished on
+; purpose, don't restart it" - while every OTHER exit code (crashes,
+; uncaught exceptions -> process.exit(1) in index.js) still falls through
+; to "Default Restart" above, so real crash-recovery is unaffected.
+Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit 0 Exit"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppNoConsole 1"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 

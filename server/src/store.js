@@ -71,9 +71,28 @@ async function queueCommand(deviceId, type, payload = {}) {
 
 // Fetches all pending commands for a device and marks them delivered.
 // Called on every agent heartbeat.
+//
+// Pops items one at a time (LPOP) instead of the old approach of reading
+// the whole list with LRANGE and then wiping it with a single DEL. That
+// older approach had a real race: if an admin action (unlock/lock/
+// send_logs/update_rules/uninstall - anything that calls queueCommand,
+// i.e. RPUSH) landed in the brief window between the LRANGE snapshot and
+// the DEL, the newly-pushed command id got wiped out by that DEL without
+// ever being read or returned to the agent - it looked "sent" from the
+// dashboard (the admin API call succeeded) but the device would never
+// receive or execute it, with no error anywhere to explain why. LPOP only
+// ever removes what actually existed in the list at the moment it's
+// called, so anything an admin queues concurrently is simply left for the
+// next heartbeat's drain instead of being silently discarded.
 async function drainPendingCommands(deviceId) {
   const key = `device:${deviceId}:pending_cmds`;
-  const ids = await redis.lrange(key, 0, -1);
+  const count = await redis.llen(key);
+  if (!count) return [];
+
+  const popPipeline = redis.pipeline();
+  for (let i = 0; i < count; i++) popPipeline.lpop(key);
+  const popped = await popPipeline.exec();
+  const ids = popped.map(([, id]) => id).filter(Boolean);
   if (!ids.length) return [];
 
   const pipeline = redis.pipeline();
@@ -81,12 +100,13 @@ async function drainPendingCommands(deviceId) {
   const results = await pipeline.exec();
   const commands = results.map(([, data]) => data).filter(Boolean);
 
-  const markPipeline = redis.pipeline();
-  commands.forEach((cmd) => {
-    markPipeline.hset(`cmd:${cmd.id}`, { status: 'delivered', delivered_at: new Date().toISOString() });
-  });
-  markPipeline.del(key);
-  await markPipeline.exec();
+  if (commands.length) {
+    const markPipeline = redis.pipeline();
+    commands.forEach((cmd) => {
+      markPipeline.hset(`cmd:${cmd.id}`, { status: 'delivered', delivered_at: new Date().toISOString() });
+    });
+    await markPipeline.exec();
+  }
 
   return commands.map((cmd) => ({ ...cmd, payload: JSON.parse(cmd.payload || '{}') }));
 }

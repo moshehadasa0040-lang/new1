@@ -8,8 +8,41 @@ async function api(path, opts = {}) {
     credentials: 'same-origin',
     ...opts
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'request_failed');
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || 'request_failed');
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
+}
+
+// Every button handler below used to just `await api(...)` with no
+// try/catch. If that request failed for ANY reason - the admin session
+// cookie expiring (24h maxAge, easy to hit if a dashboard tab is left
+// open), a network hiccup, or a genuine server error - the click handler's
+// promise rejected silently (an unhandled rejection in the console) and
+// the button appeared to simply do nothing: no error, no explanation. That
+// applied equally to every action, including "unlock"/"lock" and "בקש
+// לוגים" - so a parent could click "פתח זמנית" or "בקש לוגים", get no
+// feedback at all, and have no way to tell whether it worked, failed, or
+// they just needed to wait. This wrapper makes every action either
+// succeed visibly or fail visibly - never silently - and specifically
+// detects an expired session (401) and sends the admin back to the login
+// screen with an explanation, instead of leaving every button looking
+// "broken" for a reason that has nothing to do with the feature itself.
+async function runAction(fn) {
+  try {
+    await fn();
+  } catch (e) {
+    if (e.status === 401) {
+      showLogin();
+      const errorEl = document.getElementById('login-error');
+      if (errorEl) errorEl.textContent = 'ההתחברות פגה - יש להתחבר מחדש.';
+      return;
+    }
+    alert(`הפעולה נכשלה: ${e.message || 'שגיאה לא ידועה'}. נסה שוב.`);
+  }
 }
 
 async function checkSession() {
@@ -47,9 +80,15 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   showLogin();
 });
 
+// Also guarded by runAction: previously, if the session expired while the
+// dashboard was sitting open, this silent-refresh call would throw every
+// 10 seconds forever (unhandled rejection each time) and the device list
+// would just quietly stop updating with no indication why.
 async function loadDevices() {
-  const { devices } = await api('/api/admin/devices');
-  renderDevices(devices);
+  await runAction(async () => {
+    const { devices } = await api('/api/admin/devices');
+    renderDevices(devices);
+  });
 }
 
 function renderDevices(devices) {
@@ -92,7 +131,7 @@ function renderDevices(devices) {
 
   deviceList.querySelectorAll('.device-card').forEach((card) => {
     const id = card.dataset.id;
-    card.querySelector('.unlock-btn')?.addEventListener('click', async () => {
+    card.querySelector('.unlock-btn')?.addEventListener('click', () => runAction(async () => {
       const minutes = prompt('לכמה דקות לפתוח?', '15');
       if (!minutes) return;
       await api(`/api/admin/devices/${id}/unlock`, {
@@ -100,12 +139,12 @@ function renderDevices(devices) {
         body: JSON.stringify({ minutes: Number(minutes) })
       });
       loadDevices();
-    });
-    card.querySelector('.lock-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.lock-btn')?.addEventListener('click', () => runAction(async () => {
       await api(`/api/admin/devices/${id}/lock`, { method: 'POST' });
       loadDevices();
-    });
-    card.querySelector('.rules-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.rules-btn')?.addEventListener('click', () => runAction(async () => {
       const current = prompt(
         'רשימת תהליכים לחסימה, מופרדים בפסיק (למשל: vlc.exe,chrome.exe):',
         'vlc.exe,wmplayer.exe,mpc-hc64.exe,Video.UI.exe,MediaPlayer.exe'
@@ -117,12 +156,12 @@ function renderDevices(devices) {
         body: JSON.stringify({ blockedProcesses })
       });
       alert('הרשימה תתעדכן בפעם הבאה שהמחשב יתחבר (עד דקה).');
-    });
-    card.querySelector('.logs-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.logs-btn')?.addEventListener('click', () => runAction(async () => {
       await api(`/api/admin/devices/${id}/request-logs`, { method: 'POST' });
       alert('בקשת לוגים נשלחה. המתן כדקה, ואז לחץ "הורד לוגים".');
-    });
-    card.querySelector('.download-logs-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.download-logs-btn')?.addEventListener('click', () => runAction(async () => {
       const { logs } = await api(`/api/admin/devices/${id}/logs`);
       if (!logs || !logs.content) {
         alert('אין עדיין לוגים. לחץ קודם "בקש לוגים" והמתן כדקה.');
@@ -135,17 +174,17 @@ function renderDevices(devices) {
       a.download = `${id}-logs.txt`;
       a.click();
       URL.revokeObjectURL(url);
-    });
-    card.querySelector('.uninstall-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.uninstall-btn')?.addEventListener('click', () => runAction(async () => {
       if (!confirm('להסיר את התוכנה לגמרי מהמחשב הזה?')) return;
       await api(`/api/admin/devices/${id}/uninstall`, { method: 'POST' });
       alert('פקודת הסרה נשלחה. היא תתבצע בפעם הבאה שהמחשב יתחבר.');
-    });
-    card.querySelector('.remove-btn')?.addEventListener('click', async () => {
+    }));
+    card.querySelector('.remove-btn')?.addEventListener('click', () => runAction(async () => {
       if (!confirm('למחוק את המחשב מהדשבורד? (זה לא מסיר את התוכנה בפועל)')) return;
       await api(`/api/admin/devices/${id}`, { method: 'DELETE' });
       loadDevices();
-    });
+    }));
   });
 }
 

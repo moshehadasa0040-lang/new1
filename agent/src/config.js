@@ -3,6 +3,12 @@
 // ---------------------------------------------------------------------------
 
 module.exports = {
+  // Name of the Windows service NSSM registers the agent under. Must match
+  // {#MyServiceName} in agent/installer/setup.iss and the name used in
+  // uninstall-helper.bat - kept here too so agent code (see index.js's
+  // NSSM AppExit self-heal check) doesn't need its own hardcoded copy.
+  SERVICE_NAME: 'ContentBlockerAgent',
+
   // URL of your deployed dashboard server (live on Render).
   SERVER_URL: process.env.CB_SERVER_URL || 'https://new1-q4bb.onrender.com',
 

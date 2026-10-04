@@ -69,6 +69,8 @@ let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
 let appliedUnlockUntil = null; // dedup guard - avoid reapplying the same unlock on every heartbeat
 let lockScanTimer = null;
+let quickScanTimer = null;
+let lastHeartbeatOk = null; // null = unknown yet; used to log only on state CHANGES
 // Set the moment a remote 'uninstall' command starts. From then on, nothing
 // (periodic lock scan, heartbeat, 401 re-registration) is allowed to
 // re-lock files or re-register the device while the unlock sweep runs.
@@ -89,7 +91,10 @@ async function ensureRegistered() {
 async function reLockNow() {
   appliedUnlockUntil = null;
   blocker.setBlocking(true);
-  await fileLock.lockAll(() => blocker.isBlocking());
+  logger.log('Re-locking video files now.');
+  const keepGoing = () => blocker.isBlocking();
+  await fileLock.lockPriority(keepGoing, { force: true });
+  await fileLock.lockAll(keepGoing, { force: true });
 }
 
 async function temporarilyUnlockNow() {
@@ -110,6 +115,7 @@ async function scheduleReLock(untilIso) {
 }
 
 async function applyCommand(cmd) {
+  logger.log(`Command received from dashboard: ${cmd.type}${cmd.payload && cmd.payload.until ? ' (until ' + cmd.payload.until + ')' : ''}`);
   switch (cmd.type) {
     case 'unlock':
       await scheduleReLock(cmd.payload.until);
@@ -141,6 +147,7 @@ async function applyCommand(cmd) {
       uninstalling = true;
       clearTimeout(temporaryUnlockTimer);
       clearInterval(lockScanTimer);
+      clearInterval(quickScanTimer);
       blocker.setBlocking(false);
       blocker.stop();
       // Give an in-flight lockFile() a moment to finish so the sweep below
@@ -181,6 +188,10 @@ async function heartbeatLoop() {
   if (uninstalling) return;
   try {
     const { unlockedUntil, commands } = await api.heartbeat(deviceId, deviceToken);
+    if (lastHeartbeatOk !== true) {
+      logger.log(lastHeartbeatOk === false ? 'Server connection restored (heartbeat OK).' : 'First heartbeat OK - connected to server.');
+      lastHeartbeatOk = true;
+    }
 
     // The server also reports the current unlock deadline on every
     // heartbeat (not just via the one-time 'unlock' command) so that if
@@ -220,7 +231,11 @@ async function heartbeatLoop() {
       return;
     }
     // Network hiccup / server temporarily down - just try again next cycle.
-    logger.log(`Heartbeat failed: ${err.message}`);
+    // Logged once per outage (not every 45s) to keep the log readable.
+    if (lastHeartbeatOk !== false) {
+      logger.log(`Heartbeat failed (will keep retrying): ${err.message}`);
+    }
+    lastHeartbeatOk = false;
   }
 }
 
@@ -232,15 +247,40 @@ async function main() {
   const version = require('../package.json').version;
   logger.log(`Agent v${version} starting. Device ID: ${deviceId}. Blocked extensions: ${config.MOVIE_EXTENSIONS.join(', ')}`);
 
+  // Diagnostics: who the service runs as matters - locking files needs
+  // SYSTEM / administrator rights.
+  try {
+    const { stdout } = await execAsync('whoami');
+    logger.log(`Running as: ${stdout.trim()} | exe: ${process.execPath} | logs: ${logger.LOG_FILE}`);
+  } catch (e) {
+    logger.log(`whoami failed: ${e.message}`);
+  }
+  logger.log(`Blocking is ${blocker.isBlocking() ? 'ON' : 'OFF'} at startup. Previously tracked locked files: see locked-files.json.`);
+
   blocker.start();
 
-  // Initial full scan+lock of existing video files - don't block startup
-  // on this (it can take a while on a large disk), let it run in the
-  // background while process-based blocking is already active.
-  fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
+  // 1) QUICK scan of user folders (Videos, Downloads, Desktop, Public...)
+  //    runs immediately - seconds, not minutes - so files people actually
+  //    use are locked right away.
+  // 2) Then the slow full-drive scan runs in the background.
+  // Neither blocks startup or the heartbeat.
+  const keepGoing = () => blocker.isBlocking();
+  fileLock
+    .lockPriority(keepGoing)
+    .then(() => fileLock.lockAll(keepGoing))
+    .catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
+
+  // Quick re-scan every ~30s catches newly created/copied videos fast; the
+  // full scan every 3 min catches everything else. Both are guarded inside
+  // fileLock so a slow scan is never started on top of itself.
+  quickScanTimer = setInterval(() => {
+    if (!uninstalling && blocker.isBlocking()) {
+      fileLock.lockPriority(keepGoing).catch((err) => logger.log(`Quick scan failed: ${err.message}`));
+    }
+  }, config.FILE_LOCK_QUICK_INTERVAL_MS);
   lockScanTimer = setInterval(() => {
     if (!uninstalling && blocker.isBlocking()) {
-      fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
+      fileLock.lockAll(keepGoing).catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
     }
   }, config.FILE_LOCK_SCAN_INTERVAL_MS);
 

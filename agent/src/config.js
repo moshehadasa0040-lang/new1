@@ -27,6 +27,34 @@ module.exports = {
   // Where the agent stores its local state (device id/token, cache of rules).
   DATA_DIR: 'C:\\ProgramData\\ContentBlockerAgent',
 
+  // Human-readable logs. Deliberately in a normal, easy-to-find folder
+  // (Public Documents) so it's possible to see exactly what the agent did
+  // without digging through ProgramData. The installer and the agent both
+  // write here; NSSM's stdout/stderr capture files go here too.
+  LOG_DIR: 'C:\\Users\\Public\\Documents\\ContentBlockerLogs',
+
+  // QUICK scan: only the user-profile folders (Videos, Downloads, Desktop,
+  // Public ...). That's where nearly all real video files live and it takes
+  // seconds, instead of the minutes a whole-drive scan needs. It runs
+  // immediately at startup and then often, so a file is locked within
+  // moments - not only after the slow full scan finishes.
+  PRIORITY_ROOTS: [(process.env.SystemDrive || 'C:') + '\\Users'],
+  FILE_LOCK_QUICK_INTERVAL_MS: 30 * 1000,
+
+  // How many icacls processes to run in parallel while locking.
+  LOCK_CONCURRENCY: 4,
+
+  // Never lock files under these folders: they belong to Windows / installed
+  // programs (sample clips, help videos, game assets...) and denying "Users"
+  // read access there can break the OS or applications. (Unlocking on
+  // uninstall still covers everything, to be safe.)
+  EXCLUDED_PATH_PREFIXES: [
+    (process.env.SystemRoot || 'C:\\Windows') + '\\',
+    (process.env.ProgramFiles || 'C:\\Program Files') + '\\',
+    (process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)') + '\\',
+    'C:\\ProgramData\\ContentBlockerAgent\\'
+  ],
+
   // Process names (as shown in Task Manager / tasklist) that are blocked
   // whenever the device is locked. Extend this list as needed - it's also
   // overridable per-device from the server via an 'update_rules' command.

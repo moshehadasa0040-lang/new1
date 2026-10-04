@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.9.1"
+#define MyAppVersion "1.9.2"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -53,6 +53,21 @@ Source: "uninstall-helper.bat"; DestDir: "{app}"; Flags: ignoreversion
 var
   DeviceNamePage: TInputQueryWizardPage;
 
+procedure AppendLog(Msg: String);
+var
+  LogDir: String;
+begin
+  // Same folder/file the agent logs to, so install + runtime history read
+  // as one timeline. Best-effort: logging must never break the install.
+  LogDir := 'C:\Users\Public\Documents\ContentBlockerLogs';
+  try
+    ForceDirectories(LogDir);
+    SaveStringToFile(LogDir + '\agent.log',
+      '[' + GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + '] installer: ' + Msg + #13#10, True);
+  except
+  end;
+end;
+
 function GetComputerNameString(): String;
 begin
   // COMPUTERNAME is a standard Windows environment variable - GetEnv is a
@@ -86,6 +101,7 @@ var
 begin
   if CurStep = ssInstall then
   begin
+    AppendLog('Installing version {#MyAppVersion} into ' + ExpandConstant('{app}'));
     // Upgrade-over-existing-install: the old service still has the agent
     // exe open, which makes copying the new files fail or get postponed
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
@@ -112,7 +128,24 @@ begin
     SetArrayLength(Lines, 1);
     Lines[0] := DeviceName;
     SaveStringsToUTF8File(ExpandConstant('{app}\device-name.txt'), Lines, False);
+    AppendLog('Files copied, registering and starting the service next.');
   end;
+  if CurStep = ssDone then
+  begin
+    // Verify the service really is up - Inno doesn't surface [Run] failures.
+    Exec(ExpandConstant('{sys}\cmd.exe'),
+      '/c sc query {#MyServiceName} | findstr /i "STATE" >> "C:\Users\Public\Documents\ContentBlockerLogs\agent.log"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    AppendLog('Install finished. (The line above, if present, is the Windows service state.)');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    AppendLog('Uninstall started: service will be stopped, files unlocked, service removed.');
+  if CurUninstallStep = usPostUninstall then
+    AppendLog('Uninstall finished. Logs folder intentionally kept.');
 end;
 
 [Run]
@@ -144,6 +177,10 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit Default Re
 ; to "Default Restart" above, so real crash-recovery is unaffected.
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit 0 Exit"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppNoConsole 1"; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppStdout ""C:\Users\Public\Documents\ContentBlockerLogs\service-stdout.log"""; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppStderr ""C:\Users\Public\Documents\ContentBlockerLogs\service-stderr.log"""; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateFiles 1"; Flags: runhidden waituntilterminated
+Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 1048576"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 
 [UninstallRun]

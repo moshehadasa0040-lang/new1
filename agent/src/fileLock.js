@@ -78,34 +78,74 @@ async function getScannableDrives() {
   }
 }
 
-async function findVideoFiles(drive) {
+function hasMovieExt(filePath) {
+  const lower = filePath.toLowerCase();
+  return config.MOVIE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function isExcluded(filePath) {
+  const lower = filePath.toLowerCase();
+  return config.EXCLUDED_PATH_PREFIXES.some((prefix) => lower.startsWith(prefix.toLowerCase()));
+}
+
+function parsePathList(stdout) {
+  const seen = new Set();
+  for (const raw of String(stdout || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    // Keep only real absolute paths with a movie extension. This also drops
+    // stray messages, and 8.3 short-name false matches (e.g. "*.mpg"
+    // matching "x.mpgfoo").
+    if (/^[A-Za-z]:\\/.test(line) && hasMovieExt(line)) seen.add(line);
+  }
+  return [...seen];
+}
+
+// Old, slow PowerShell scan - kept only as a fallback if `dir` itself fails.
+async function findVideoFilesPS(root) {
   const includeList = config.MOVIE_EXTENSIONS.map((ext) => `*${ext}`).join(',');
   try {
-    // Setting $ErrorActionPreference globally (not just -ErrorAction on
-    // the cmdlet itself) is needed here: in practice, "Access is denied"
-    // errors hit while RECURSING INTO a protected system folder (e.g.
-    // System Volume Information) can still surface as a terminating error
-    // that kills the whole pipeline and makes powershell.exe exit non-zero
-    // - even with -ErrorAction SilentlyContinue on Get-ChildItem itself.
-    // That previously caused the entire scan to come back completely
-    // empty (0 files) if it hit even ONE inaccessible folder anywhere on
-    // the whole drive - which is exactly what happened during a real
-    // uninstall attempt (logged as "Access is denied", followed by
-    // "unlocked 0 video file(s)"). The try/catch + explicit `exit 0`
-    // below guarantee the process always exits cleanly and returns
-    // whatever it already found, instead of discarding all of it over a
-    // single inaccessible subfolder.
+    // $ErrorActionPreference + try/catch + explicit `exit 0`: a single
+    // "Access is denied" folder anywhere must not discard everything the
+    // scan already found (that exact failure once made an uninstall sweep
+    // return 0 files). UTF-8 output so non-ASCII (e.g. Hebrew) file names
+    // survive the trip back into Node.
     const psScript =
-      "$ErrorActionPreference = 'SilentlyContinue'; " +
-      `try { Get-ChildItem -Path '${drive}\\' -Recurse -File -Include ${includeList} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName } catch {} ` +
+      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'SilentlyContinue'; " +
+      `try { Get-ChildItem -Path '${root.replace(/[\\/]+$/, '')}\\' -Recurse -File -Include ${includeList} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName } catch {} ` +
       'exit 0';
     const { stdout } = await execAsync(`powershell -NoProfile -Command "${psScript}"`, {
-      maxBuffer: 1024 * 1024 * 32
+      maxBuffer: 1024 * 1024 * 64,
+      encoding: 'utf8'
     });
-    return stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    return parsePathList(stdout);
   } catch (e) {
-    logger.log(`Scan failed on ${drive}: ${e.message}`);
+    logger.log(`PowerShell scan failed on ${root}: ${e.message}`);
     return [];
+  }
+}
+
+// Finds every video file under `root` (a drive like "C:" or a folder).
+// Uses `cmd /c dir /s /b` - far faster than Get-ChildItem -Recurse -Include
+// (seconds vs. minutes on a big drive), and it just skips folders it can't
+// read. `chcp 65001` makes the output UTF-8 so Hebrew/non-ASCII names work.
+async function findVideoFiles(root) {
+  const base = root.replace(/[\\/]+$/, '');
+  const patterns = config.MOVIE_EXTENSIONS.map((ext) => `"${base}\\*${ext}"`).join(' ');
+  const cmd = `chcp 65001 >nul & dir /s /b /a-d ${patterns} 2>nul`;
+  try {
+    const { stdout } = await execAsync(cmd, {
+      maxBuffer: 1024 * 1024 * 64,
+      windowsHide: true,
+      encoding: 'utf8'
+    });
+    return parsePathList(stdout);
+  } catch (e) {
+    // dir exits with code 1 when nothing matched (normal) - and may still
+    // have printed partial results if it hit errors along the way.
+    const partial = parsePathList(e && e.stdout);
+    if (partial.length > 0 || (e && e.code === 1)) return partial;
+    logger.log(`dir scan failed on ${root} (${e && e.message}) - falling back to PowerShell.`);
+    return findVideoFilesPS(root);
   }
 }
 
@@ -115,26 +155,27 @@ function denyArgs() {
   return DENY_SIDS.map((sid) => `/deny "${sid}:(R)"`).join(' ');
 }
 
-async function lockFile(filePath) {
+const inFlight = new Set();
+
+// Returns 'already' | 'locked' | 'failed' (and the failure reason via cb).
+async function lockFile(filePath, onFail) {
   // Skip files we already believe are locked - re-running icacls /deny on
-  // an already-denied file doesn't update anything in place, it just adds
-  // ANOTHER explicit deny entry for the same account. After enough repeat
-  // scans (this runs every 3 minutes, for as long as the agent is
-  // installed) the same file can end up with a pile of duplicate deny
-  // entries, which turned out to be exactly why /remove:d later failed to
-  // fully restore access - see unlockFile() below.
-  if (lockedFiles.has(filePath)) return true;
+  // an already-denied file just piles up duplicate deny entries, which is
+  // what once made /remove:d fail to fully restore access (see unlockFile).
+  if (lockedFiles.has(filePath)) return 'already';
+  // Quick and full scans can overlap; never lock the same file twice at once.
+  if (inFlight.has(filePath)) return 'already';
+  inFlight.add(filePath);
   try {
-    await execAsync(`icacls "${filePath}" ${denyArgs()} /Q`);
+    await execAsync(`icacls "${filePath}" ${denyArgs()} /Q`, { windowsHide: true });
     lockedFiles.add(filePath);
-    saveLockedSet(lockedFiles); // persist immediately, not just at the end
-    // of the whole scan - so a service stop mid-scan doesn't lose track of
-    // files already locked in that same scan.
-    return true;
+    return 'locked';
   } catch (e) {
-    // File may be in use, deleted mid-scan, or otherwise inaccessible -
-    // not fatal, just skip it and continue with the rest.
-    return false;
+    const reason = String((e && (e.stderr || e.stdout || e.message)) || 'unknown').trim().split(/\r?\n/)[0];
+    if (onFail) onFail(filePath, reason);
+    return 'failed';
+  } finally {
+    inFlight.delete(filePath);
   }
 }
 
@@ -156,41 +197,136 @@ async function unlockFile(filePath) {
 
 // --- Bulk operations ---------------------------------------------------------
 
-// Scans all drives for video files and locks every one found. Safe to call
-// repeatedly (e.g. on a timer) - already-locked files are just re-locked
-// (a no-op in practice), and this is how newly added/copied video files
-// get caught without needing a live filesystem watcher on every drive.
-//
-// `shouldContinue` is checked before locking EACH individual file, not just
-// once at the start. A full-drive scan can take a minute or more - without
-// this, a scan that started while blocking was on would keep locking files
-// for its entire duration even if the admin unlocked the device moments
-// after the scan began, silently undoing the unlock once the (already
-// in-flight) scan finished. Pass `() => blocker.isBlocking()` from the
-// caller so an unlock mid-scan takes effect within a single file's worth of
-// delay, not a full scan's worth.
-async function lockAll(shouldContinue = () => true) {
-  const drives = await getScannableDrives();
-  let total = 0;
-  for (const drive of drives) {
-    if (!shouldContinue()) {
-      logger.log('File-lock scan stopped early: unlocked mid-scan.');
-      break;
+// Locks a list of files with a small worker pool. `shouldContinue` is
+// checked before EACH file so an admin "unlock" mid-scan takes effect within
+// one file's worth of delay (pass () => blocker.isBlocking()).
+async function lockFiles(files, shouldContinue, label) {
+  let idx = 0;
+  let locked = 0;
+  let failed = 0;
+  let sinceSave = 0;
+  const failLogged = { n: 0 };
+  const onFail = (file, reason) => {
+    failed += 1;
+    if (failLogged.n < 10) {
+      failLogged.n += 1;
+      logger.log(`[${label}] Could not lock: ${file} -> ${reason}`);
     }
-    const files = await findVideoFiles(drive);
-    for (const file of files) {
-      if (!shouldContinue()) {
-        logger.log('File-lock scan stopped early: unlocked mid-scan.');
-        saveLockedSet(lockedFiles);
-        return total;
+  };
+  const targets = files.filter((f) => !isExcluded(f));
+  async function worker() {
+    while (idx < targets.length) {
+      if (!shouldContinue()) return;
+      const file = targets[idx++];
+      const result = await lockFile(file, onFail);
+      if (result === 'locked') {
+        locked += 1;
+        sinceSave += 1;
+        // Persist regularly (not only at the end) so a service stop
+        // mid-scan doesn't lose track of files already locked.
+        if (sinceSave >= 20) {
+          sinceSave = 0;
+          saveLockedSet(lockedFiles);
+        }
       }
-      const ok = await lockFile(file);
-      if (ok) total += 1;
     }
   }
+  await Promise.all(Array.from({ length: config.LOCK_CONCURRENCY }, worker));
   saveLockedSet(lockedFiles);
-  if (total > 0) logger.log(`File-lock scan: ${total} video file(s) locked across ${drives.length} drive(s).`);
+  return { locked, failed, considered: targets.length, skipped: files.length - targets.length };
+}
+
+const scanState = {
+  quick: { running: false, pending: false },
+  full: { running: false, pending: false }
+};
+
+async function doQuickScan(shouldContinue) {
+  const started = Date.now();
+  let found = 0;
+  let locked = 0;
+  let failed = 0;
+  for (const root of config.PRIORITY_ROOTS) {
+    if (!shouldContinue()) break;
+    const files = await findVideoFiles(root);
+    found += files.length;
+    const r = await lockFiles(files, shouldContinue, 'quick');
+    locked += r.locked;
+    failed += r.failed;
+  }
+  // The quick scan runs every ~30s - only log when something happened, so
+  // the log stays readable.
+  if (locked > 0 || failed > 0) {
+    logger.log(
+      `Quick scan (user folders): found ${found}, newly locked ${locked}, failed ${failed} (${((Date.now() - started) / 1000).toFixed(1)}s).`
+    );
+  }
+  return locked;
+}
+
+async function doFullScan(shouldContinue) {
+  const started = Date.now();
+  const drives = await getScannableDrives();
+  logger.log(`Full scan started on ${drives.length} drive(s): ${drives.join(', ') || '(none found)'}`);
+  let totalLocked = 0;
+  let totalFailed = 0;
+  let totalFound = 0;
+  for (const drive of drives) {
+    if (!shouldContinue()) {
+      logger.log('Full scan stopped early: unlocked mid-scan.');
+      break;
+    }
+    const t0 = Date.now();
+    const files = await findVideoFiles(drive);
+    totalFound += files.length;
+    logger.log(`Drive ${drive}: found ${files.length} video file(s) in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
+    const r = await lockFiles(files, shouldContinue, 'full');
+    totalLocked += r.locked;
+    totalFailed += r.failed;
+    logger.log(
+      `Drive ${drive}: newly locked ${r.locked}, failed ${r.failed}, skipped (system/program folders) ${r.skipped}.`
+    );
+  }
+  logger.log(
+    `Full scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s: found ${totalFound}, newly locked ${totalLocked}, failed ${totalFailed}, total tracked locked files now ${lockedFiles.size}.`
+  );
+  return totalLocked;
+}
+
+// Guarded runner: never two scans of the same kind at once (a slow full
+// scan used to be re-launched by the timer on top of itself). A periodic
+// call that finds a scan already running is simply skipped; an explicit
+// call (opts.force - e.g. re-lock after a temporary unlock) is remembered
+// and re-run as soon as the current one ends, so it is never lost.
+async function runScan(kind, fn, shouldContinue, opts = {}) {
+  const st = scanState[kind];
+  if (st.running) {
+    if (opts.force) st.pending = true;
+    return 0;
+  }
+  st.running = true;
+  let total = 0;
+  try {
+    do {
+      st.pending = false;
+      total += await fn(shouldContinue);
+    } while (st.pending && shouldContinue());
+  } catch (e) {
+    logger.log(`${kind} scan error: ${e.message}`);
+  } finally {
+    st.running = false;
+  }
   return total;
+}
+
+// Fast: user-profile folders only. Run at startup, and every ~30s.
+function lockPriority(shouldContinue = () => true, opts = {}) {
+  return runScan('quick', doQuickScan, shouldContinue, opts);
+}
+
+// Slow but complete: every fixed/removable drive.
+function lockAll(shouldContinue = () => true, opts = {}) {
+  return runScan('full', doFullScan, shouldContinue, opts);
 }
 
 // Reverses every lock this agent has ever applied (tracked in
@@ -228,6 +364,7 @@ async function unlockAllByScan() {
   let total = 0;
   for (const drive of drives) {
     const files = await findVideoFiles(drive);
+    logger.log(`Unlock sweep: drive ${drive} has ${files.length} video file(s) to restore.`);
     for (const file of files) {
       await unlockFile(file);
       total += 1;
@@ -240,4 +377,4 @@ async function unlockAllByScan() {
   return total + trackedCount;
 }
 
-module.exports = { lockAll, unlockAll, unlockAllByScan };
+module.exports = { lockAll, lockPriority, unlockAll, unlockAllByScan };

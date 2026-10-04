@@ -1,3 +1,8 @@
+// Must be set before the first fs/child_process call: the folder walk issues many
+// parallel readdir() calls and the default libuv pool is only 4 threads.
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
+
+const os = require('os');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
@@ -7,6 +12,7 @@ const api = require('./api');
 const blocker = require('./blocker');
 const fileLock = require('./fileLock');
 const logger = require('./logger');
+const statusFile = require('./status');
 const { selfUninstall } = require('./uninstall');
 const execAsync = promisify(exec);
 
@@ -71,13 +77,37 @@ if (process.argv.includes('--unlock-files')) {
 // installation itself only completes once blocking is actually in place.
 if (process.argv.includes('--lock-files')) {
   (async () => {
+    const startedAt = Date.now();
+    const writeProgress = (phase) => {
+      const p = fileLock.getProgress();
+      statusFile.writeInstallProgress({
+        phase: phase || p.phase,
+        percent: phase === 'done' ? 100 : p.percent,
+        drive: p.drive,
+        drive_index: p.driveIndex,
+        drive_count: p.driveCount,
+        found: p.found,
+        locked: p.locked,
+        failed: p.failed,
+        elapsed: Math.round((Date.now() - startedAt) / 1000),
+        updated: new Date().toISOString()
+      });
+    };
+    // The installer's splash window polls this file to show live progress.
+    writeProgress('starting');
+    const ticker = setInterval(() => writeProgress(), 700);
+    let exitCode = 0;
     try {
       logger.log(`Agent v${require('../package.json').version}: --lock-files (installer mode) started.`);
-      await fileLock.lockEverythingVerified();
+      const result = await fileLock.lockEverythingVerified();
+      if (result.failed > 0) exitCode = 2;
     } catch (e) {
       logger.log(`--lock-files failed: ${e.message}`);
+      exitCode = 1;
     }
-    process.exit(0);
+    clearInterval(ticker);
+    writeProgress('done');
+    process.exit(exitCode);
   })();
   return; // eslint-disable-line no-unreachable
 }
@@ -105,17 +135,40 @@ async function ensureRegistered() {
   return state;
 }
 
+// Snapshot for the tray icon (see agent/ui/tray.ps1). Rewritten on every
+// heartbeat result, on every state change and every 15s, so the tray can tell
+// "alive" from "service stopped" by how fresh `updated` is.
+function writeCurrentStatus(extra = {}) {
+  const blocking = blocker.isBlocking();
+  const scan = fileLock.getLastFullScan();
+  statusFile.writeStatus({
+    updated: new Date().toISOString(),
+    version: require('../package.json').version,
+    device_name: identity.getCustomDeviceName() || os.hostname(),
+    device_id: deviceId || '',
+    blocking: blocking ? 1 : 0,
+    unlocked_until: !blocking && appliedUnlockUntil ? appliedUnlockUntil : '',
+    server_ok: lastHeartbeatOk === false ? 0 : 1,
+    locked_count: fileLock.getLockedCount(),
+    last_full_scan: scan.at || '',
+    dashboard_url: config.SERVER_URL,
+    ...extra
+  });
+}
+
 async function reLockNow() {
   appliedUnlockUntil = null;
   blocker.setBlocking(true);
   logger.log('Re-locking video files now.');
   const keepGoing = () => blocker.isBlocking();
   await fileLock.lockPriority(keepGoing, { force: true });
+  writeCurrentStatus();
   await fileLock.lockAll(keepGoing, { force: true });
 }
 
 async function temporarilyUnlockNow() {
   blocker.setBlocking(false);
+  writeCurrentStatus();
   await fileLock.unlockAll();
 }
 
@@ -228,6 +281,7 @@ async function heartbeatLoop() {
     for (const cmd of commands) {
       await applyCommand(cmd);
     }
+    writeCurrentStatus();
   } catch (err) {
     if (err.response && err.response.status === 401) {
       // Our locally-saved device id/token is no longer recognized by the
@@ -253,6 +307,7 @@ async function heartbeatLoop() {
       logger.log(`Heartbeat failed (will keep retrying): ${err.message}`);
     }
     lastHeartbeatOk = false;
+    writeCurrentStatus();
   }
 }
 
@@ -301,8 +356,13 @@ async function main() {
     }
   }, config.FILE_LOCK_SCAN_INTERVAL_MS);
 
+  writeCurrentStatus();
   await heartbeatLoop();
   setInterval(heartbeatLoop, config.HEARTBEAT_INTERVAL_MS);
+  // Keeps `updated` fresh so the tray icon can tell the service is alive.
+  setInterval(() => {
+    if (!uninstalling) writeCurrentStatus();
+  }, 15 * 1000);
 }
 
 main().catch((err) => {

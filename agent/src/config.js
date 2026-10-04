@@ -38,7 +38,7 @@ module.exports = {
   // seconds, instead of the minutes a whole-drive scan needs. It runs
   // immediately at startup and then often, so a file is locked within
   // moments - not only after the slow full scan finishes.
-  PRIORITY_ROOTS: [(process.env.SystemDrive || 'C:') + '\\Users'],
+  PRIORITY_ROOTS: [(process.env.SystemDrive || 'C:') + require('path').sep + 'Users'],
   FILE_LOCK_QUICK_INTERVAL_MS: 30 * 1000,
 
   // How many icacls processes to run in parallel while locking.
@@ -49,9 +49,9 @@ module.exports = {
   // read access there can break the OS or applications. (Unlocking on
   // uninstall still covers everything, to be safe.)
   EXCLUDED_PATH_PREFIXES: [
-    (process.env.SystemRoot || 'C:\\Windows') + '\\',
-    (process.env.ProgramFiles || 'C:\\Program Files') + '\\',
-    (process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)') + '\\',
+    (process.env.SystemRoot || 'C:\\Windows') + require('path').sep,
+    (process.env.ProgramFiles || 'C:\\Program Files') + require('path').sep,
+    (process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)') + require('path').sep,
     'C:\\ProgramData\\ContentBlockerAgent\\'
   ],
 

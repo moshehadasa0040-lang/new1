@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.9.4"
+#define MyAppVersion "1.9.5"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -31,6 +31,12 @@ OutputBaseFilename=ContentBlockerAgent-Setup
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
+; Branding: installer icon, wizard side/corner images, and the icon shown in
+; "Add or remove programs". (Images generated into agent\ui\assets.)
+SetupIconFile=..\ui\assets\icon.ico
+UninstallDisplayIcon={app}\assets\icon.ico
+WizardImageFile=..\ui\assets\wizard-large.bmp
+WizardSmallImageFile=..\ui\assets\wizard-small.bmp
 ArchitecturesInstallIn64BitMode=x64
 
 [UninstallDelete]
@@ -48,6 +54,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\dist\content-blocker-agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-helper.bat"; DestDir: "{app}"; Flags: ignoreversion
+; User-facing UI (see agent\ui): tray icon with About + status menu, the
+; installer's live progress window, a launcher that starts PowerShell with no
+; console window, and the logo/icons.
+Source: "..\ui\tray.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\ui\install-splash.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\ui\ps-hidden.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\ui\assets\*"; DestDir: "{app}\assets"; Excludes: "wizard-*.bmp"; Flags: ignoreversion
+
+[Registry]
+; Tray icon starts for every user at logon. It only displays state - the
+; protection itself is the Windows service, so closing the icon unblocks nothing.
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ContentBlockerTray"; ValueData: """{sys}\wscript.exe"" ""{app}\ps-hidden.vbs"" tray.ps1"; Flags: uninsdeletevalue
 
 [Code]
 var
@@ -184,8 +202,14 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 104
 ; Installation is not finished until every video file has been locked AND
 ; verified: the agent exe runs in --lock-files mode and Setup waits for it
 ; (progress/result is in the log: C:\Users\Public\Documents\ContentBlockerLogs\agent.log).
+; Live progress window (logo, % bar, counters, stage list, rotating tips) so the
+; long locking step isn't a blank wait. It reads install-progress.txt written by
+; the agent and closes itself when the agent finishes.
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" install-splash.ps1"; Flags: nowait runhidden skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
+; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser
 
 [UninstallRun]
 ; Order matters here: stop the service FIRST, so its periodic file-lock

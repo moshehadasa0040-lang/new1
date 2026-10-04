@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.9.2"
+#define MyAppVersion "1.9.4"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -181,6 +181,10 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppStdout ""C:\Use
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppStderr ""C:\Users\Public\Documents\ContentBlockerLogs\service-stderr.log"""; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateFiles 1"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 1048576"; Flags: runhidden waituntilterminated
+; Installation is not finished until every video file has been locked AND
+; verified: the agent exe runs in --lock-files mode and Setup waits for it
+; (progress/result is in the log: C:\Users\Public\Documents\ContentBlockerLogs\agent.log).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 
 [UninstallRun]

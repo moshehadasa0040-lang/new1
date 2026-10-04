@@ -236,6 +236,8 @@ async function lockFiles(files, shouldContinue, label) {
   return { locked, failed, considered: targets.length, skipped: files.length - targets.length };
 }
 
+let lastFullScan = { found: 0, locked: 0, failed: 0 };
+
 const scanState = {
   quick: { running: false, pending: false },
   full: { running: false, pending: false }
@@ -264,8 +266,38 @@ async function doQuickScan(shouldContinue) {
   return locked;
 }
 
+// Keeps the "already locked" bookkeeping honest. Without this, a tracked path
+// stays "locked" forever even if the file was DELETED (stale entry), or was
+// deleted and a NEW file was created/restored/copied at the same path (the
+// new file has no deny entry, but the old record made us skip it), or
+// somebody reset the permissions by hand. Each tracked file is checked: gone
+// -> forget it; deny entry missing -> forget it so the scan below re-locks it.
+async function reconcileTracked(shouldContinue) {
+  const tracked = [...lockedFiles];
+  let gone = 0;
+  let reset = 0;
+  await mapPool(tracked, config.LOCK_CONCURRENCY, async (file) => {
+    if (!shouldContinue()) return;
+    const state = await fileState(file);
+    if (state === 'gone') {
+      lockedFiles.delete(file);
+      gone += 1;
+    } else if (state === 'unlocked') {
+      lockedFiles.delete(file);
+      reset += 1;
+    }
+  });
+  if (gone > 0 || reset > 0) {
+    saveLockedSet(lockedFiles);
+    logger.log(
+      `Reconcile: ${gone} tracked file(s) no longer exist (forgotten), ${reset} had lost their lock (will be re-locked).`
+    );
+  }
+}
+
 async function doFullScan(shouldContinue) {
   const started = Date.now();
+  await reconcileTracked(shouldContinue);
   const drives = await getScannableDrives();
   logger.log(`Full scan started on ${drives.length} drive(s): ${drives.join(', ') || '(none found)'}`);
   let totalLocked = 0;
@@ -290,6 +322,7 @@ async function doFullScan(shouldContinue) {
   logger.log(
     `Full scan finished in ${((Date.now() - started) / 1000).toFixed(1)}s: found ${totalFound}, newly locked ${totalLocked}, failed ${totalFailed}, total tracked locked files now ${lockedFiles.size}.`
   );
+  lastFullScan = { found: totalFound, locked: totalLocked, failed: totalFailed };
   return totalLocked;
 }
 
@@ -358,15 +391,18 @@ async function unlockAll() {
 // restore someone's access to their own files. Slower than unlockAll(),
 // but that's fine here - it only runs once, on the way out.
 async function unlockAllByScan() {
+  const trackedBefore = [...lockedFiles];
   const trackedCount = await unlockAll();
 
   const drives = await getScannableDrives();
+  const everything = new Set(trackedBefore);
   let total = 0;
   for (const drive of drives) {
     const files = await findVideoFiles(drive);
     logger.log(`Unlock sweep: drive ${drive} has ${files.length} video file(s) to restore.`);
     for (const file of files) {
       await unlockFile(file);
+      everything.add(file);
       total += 1;
     }
   }
@@ -374,7 +410,104 @@ async function unlockAllByScan() {
   logger.log(
     `Uninstall sweep: unlocked ${total} video file(s) across ${drives.length} drive(s) (plus ${trackedCount} from tracked state).`
   );
-  return total + trackedCount;
+
+  // VERIFY - don't just assume. Re-read each file's permissions; anything
+  // that still carries our deny entry gets reset again (up to 3 rounds).
+  // The uninstall only continues once this has finished, so a failure to
+  // restore a file is at least visible in the log instead of silent.
+  let remaining = [...everything];
+  for (let round = 1; round <= 3; round++) {
+    const stillLocked = [];
+    await mapPool(remaining, config.LOCK_CONCURRENCY, async (file) => {
+      if ((await fileState(file)) === 'locked') stillLocked.push(file);
+    });
+    remaining = stillLocked;
+    if (remaining.length === 0) break;
+    logger.log(`Verify round ${round}: ${remaining.length} file(s) still locked - retrying unlock.`);
+    await mapPool(remaining, config.LOCK_CONCURRENCY, unlockFile);
+  }
+  saveLockedSet(lockedFiles);
+  if (remaining.length === 0) {
+    logger.log(`UNLOCK VERIFIED: all ${everything.size} video file(s) are accessible again.`);
+  } else {
+    logger.log(`UNLOCK INCOMPLETE: ${remaining.length} file(s) could not be restored, e.g. ${remaining.slice(0, 5).join(' | ')}`);
+  }
+  return { unlocked: total + trackedCount, remaining: remaining.length };
 }
 
-module.exports = { lockAll, lockPriority, unlockAll, unlockAllByScan };
+// --- Verification helpers ----------------------------------------------------
+
+// Returns 'locked' | 'unlocked' | 'gone'.
+//
+// Why not just parse `icacls`? Because WHO is asking matters: our deny entry
+// covers the Users group, and an elevated administrator (e.g. the installer
+// or uninstaller) is a member of Users - for that process even READING the
+// ACL of a locked file fails with "Access is denied". The SYSTEM service is
+// not in Users, so it reads fine. So:
+//   - icacls works  -> look for our DENY entry
+//   - icacls fails  -> the file is either gone (ENOENT) or unreadable to us
+//                      because it IS locked (EACCES/EPERM)
+function fileState(file) {
+  return execAsync(`icacls "${file}"`, { windowsHide: true, encoding: 'utf8' })
+    .then(({ stdout }) => (/\(DENY\)/i.test(stdout) ? 'locked' : 'unlocked'))
+    .catch(() => {
+      try {
+        fs.lstatSync(file);
+        return 'locked'; // exists, but we can't even read its ACL
+      } catch (e) {
+        return e && (e.code === 'ENOENT' || e.code === 'ENOTDIR') ? 'gone' : 'locked';
+      }
+    });
+}
+
+async function mapPool(items, concurrency, fn) {
+  let idx = 0;
+  async function worker() {
+    while (idx < items.length) {
+      const item = items[idx++];
+      await fn(item);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+}
+
+// Used by the INSTALLER (agent --lock-files): locks every video file on every
+// drive and does not return until it has been verified, so the installation
+// is not "finished" while movies are still playable. Steps: quick scan of the
+// user folders, full scan of all drives, then verify every tracked file really
+// has the deny entry and re-lock any that don't. Failures are logged and the
+// function still returns (an unlockable file must not hang the installer
+// forever) - the running service keeps retrying them every scan afterwards.
+async function lockEverythingVerified() {
+  const keepGoing = () => true;
+  logger.log('Install: locking ALL video files before finishing installation...');
+  await lockPriority(keepGoing, { force: true });
+  await lockAll(keepGoing, { force: true });
+  if (lastFullScan.failed > 0) {
+    logger.log(`Install: ${lastFullScan.failed} file(s) failed to lock - second attempt.`);
+    await lockAll(keepGoing, { force: true });
+  }
+
+  let repaired = 0;
+  const missing = [];
+  await mapPool([...lockedFiles], config.LOCK_CONCURRENCY, async (file) => {
+    const r = await fileState(file);
+    if (r === 'gone') lockedFiles.delete(file); // file was deleted
+    else if (r === 'unlocked') missing.push(file);
+  });
+  for (const file of missing) lockedFiles.delete(file);
+  await mapPool(missing, config.LOCK_CONCURRENCY, async (file) => {
+    if ((await lockFile(file)) === 'locked') repaired += 1;
+  });
+  saveLockedSet(lockedFiles);
+
+  const failed = missing.length - repaired;
+  logger.log(
+    `INSTALL LOCK COMPLETE: ${lockedFiles.size} video file(s) locked and verified` +
+      (missing.length ? ` (${repaired} repaired during verification, ${failed} still failing)` : '') +
+      '.'
+  );
+  return { locked: lockedFiles.size, failed };
+}
+
+module.exports = { lockAll, lockPriority, lockEverythingVerified, unlockAll, unlockAllByScan };

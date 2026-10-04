@@ -65,6 +65,23 @@ if (process.argv.includes('--unlock-files')) {
   return; // eslint-disable-line no-unreachable
 }
 
+// Installer mode: the installer runs the packaged exe with this flag AFTER the
+// files are copied and BEFORE the service is started, and waits for it. It
+// does not exit until every video file has been locked and verified, so the
+// installation itself only completes once blocking is actually in place.
+if (process.argv.includes('--lock-files')) {
+  (async () => {
+    try {
+      logger.log(`Agent v${require('../package.json').version}: --lock-files (installer mode) started.`);
+      await fileLock.lockEverythingVerified();
+    } catch (e) {
+      logger.log(`--lock-files failed: ${e.message}`);
+    }
+    process.exit(0);
+  })();
+  return; // eslint-disable-line no-unreachable
+}
+
 let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
 let appliedUnlockUntil = null; // dedup guard - avoid reapplying the same unlock on every heartbeat

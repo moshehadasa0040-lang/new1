@@ -16,6 +16,11 @@ on:
       - 'v*'
   workflow_dispatch: {}
 
+# Needed so softprops/action-gh-release can create a Release with the
+# default GITHUB_TOKEN (without it: "Resource not accessible by integration").
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -46,7 +51,19 @@ jobs:
           # Using the 2.24-101 pre-release build, not the 2014 stable 2.24 -
           # nssm.cc itself recommends this build for Windows 10/Server 2016+
           # to avoid a known bug where the service fails to start.
-          Invoke-WebRequest -Uri "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip" -OutFile "nssm.zip" -Headers $headers
+          # nssm.cc is occasionally down - retry a few times before failing.
+          $ok = $false
+          foreach ($attempt in 1..4) {
+            try {
+              Invoke-WebRequest -Uri "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip" -OutFile "nssm.zip" -Headers $headers
+              $ok = $true
+              break
+            } catch {
+              Write-Host "NSSM download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+          if (-not $ok) { Write-Error "Could not download NSSM after 4 attempts."; exit 1 }
 
           Expand-Archive -Path "nssm.zip" -DestinationPath "nssm-extracted" -Force
 

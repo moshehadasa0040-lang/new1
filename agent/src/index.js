@@ -68,6 +68,11 @@ if (process.argv.includes('--unlock-files')) {
 let deviceId, deviceToken;
 let temporaryUnlockTimer = null;
 let appliedUnlockUntil = null; // dedup guard - avoid reapplying the same unlock on every heartbeat
+let lockScanTimer = null;
+// Set the moment a remote 'uninstall' command starts. From then on, nothing
+// (periodic lock scan, heartbeat, 401 re-registration) is allowed to
+// re-lock files or re-register the device while the unlock sweep runs.
+let uninstalling = false;
 
 async function ensureRegistered() {
   let state = identity.loadState();
@@ -128,10 +133,34 @@ async function applyCommand(cmd) {
       break;
     case 'uninstall':
       logger.log('Uninstall command received - unlocking files (full scan), then stopping and removing service.');
+      // Stop EVERYTHING that could re-lock files before the sweep starts.
+      // Previously blocker.isBlocking() stayed true during the (slow) sweep,
+      // so the 3-minute lock scan could re-lock files that were already
+      // released - and since locked-files.json is deleted right after, no
+      // one would ever unlock them again.
+      uninstalling = true;
+      clearTimeout(temporaryUnlockTimer);
+      clearInterval(lockScanTimer);
+      blocker.setBlocking(false);
+      blocker.stop();
+      // Give an in-flight lockFile() a moment to finish so the sweep below
+      // sees (and releases) it.
+      await new Promise((r) => setTimeout(r, 2000));
       // Full sweep, not just tracked files - same reasoning as the
       // --unlock-files path used by the normal Windows uninstaller.
-      await fileLock.unlockAllByScan();
-      await api.ack(deviceId, deviceToken, cmd.id, 'התוכנה הוסרה לפי בקשה מהדשבורד');
+      try {
+        await fileLock.unlockAllByScan();
+      } catch (e) {
+        logger.log(`Unlock sweep failed: ${e.message}`);
+      }
+      // Ack must never abort the uninstall: the command was already popped
+      // from the server queue, so a network failure here would otherwise
+      // leave the agent running (and blocking again) with no way to retry.
+      try {
+        await api.ack(deviceId, deviceToken, cmd.id, 'התוכנה הוסרה לפי בקשה מהדשבורד');
+      } catch (e) {
+        logger.log(`Ack failed (continuing uninstall): ${e.message}`);
+      }
       // Remove the device from the dashboard too, right before this
       // process exits - otherwise it would just sit there forever showing
       // "offline" after the software is already gone.
@@ -149,6 +178,7 @@ async function applyCommand(cmd) {
 }
 
 async function heartbeatLoop() {
+  if (uninstalling) return;
   try {
     const { unlockedUntil, commands } = await api.heartbeat(deviceId, deviceToken);
 
@@ -208,8 +238,8 @@ async function main() {
   // on this (it can take a while on a large disk), let it run in the
   // background while process-based blocking is already active.
   fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
-  setInterval(() => {
-    if (blocker.isBlocking()) {
+  lockScanTimer = setInterval(() => {
+    if (!uninstalling && blocker.isBlocking()) {
       fileLock.lockAll(() => blocker.isBlocking()).catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
     }
   }, config.FILE_LOCK_SCAN_INTERVAL_MS);

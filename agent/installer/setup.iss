@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.9.1"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -32,6 +32,14 @@ Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64
+
+[UninstallDelete]
+; Leftovers that Inno Setup doesn't know about (it only removes files it
+; installed itself): the device-name file written at install time, and the
+; agent's local state/log folder under ProgramData.
+Type: files; Name: "{app}\device-name.txt"
+Type: filesandordirs; Name: "{commonappdata}\ContentBlockerAgent"
+Type: dirifempty; Name: "{app}"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -73,7 +81,19 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   DeviceName: String;
   Lines: TArrayOfString;
+  ResultCode: Integer;
+  OldNssm: String;
 begin
+  if CurStep = ssInstall then
+  begin
+    // Upgrade-over-existing-install: the old service still has the agent
+    // exe open, which makes copying the new files fail or get postponed
+    // until reboot. Stop it BEFORE files are copied. (On a fresh install
+    // nssm.exe doesn't exist yet, so this is skipped.)
+    OldNssm := ExpandConstant('{app}\nssm.exe');
+    if FileExists(OldNssm) then
+      Exec(OldNssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
   if CurStep = ssPostInstall then
   begin
     // Written to a plain text file the agent reads at first registration

@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const store = require('../store');
 const { requireAdmin } = require('../auth');
 const { OFFLINE_AFTER_SECONDS } = require('./agent');
@@ -6,14 +7,37 @@ const { OFFLINE_AFTER_SECONDS } = require('./agent');
 const router = express.Router();
 
 // --- Login / logout ---------------------------------------------------------
+// Very small in-memory brute-force guard: max 10 failed attempts per IP per
+// 15 minutes. (Resets on server restart - fine for a single small instance.)
+const failedLogins = new Map();
+const MAX_FAILED = 10;
+const WINDOW_MS = 15 * 60 * 1000;
+
+function safeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 router.post('/login', (req, res) => {
   const { password } = req.body || {};
   if (!process.env.ADMIN_PASSWORD) {
     return res.status(500).json({ error: 'server_missing_admin_password_env' });
   }
-  if (password !== process.env.ADMIN_PASSWORD) {
+  const now = Date.now();
+  const rec = failedLogins.get(req.ip);
+  if (rec && now - rec.first < WINDOW_MS && rec.count >= MAX_FAILED) {
+    return res.status(429).json({ error: 'too_many_attempts' });
+  }
+  if (typeof password !== 'string' || !safeEqual(password, process.env.ADMIN_PASSWORD)) {
+    if (!rec || now - rec.first >= WINDOW_MS) {
+      failedLogins.set(req.ip, { first: now, count: 1 });
+    } else {
+      rec.count += 1;
+    }
     return res.status(401).json({ error: 'wrong_password' });
   }
+  failedLogins.delete(req.ip);
   req.session.isAdmin = true;
   res.json({ ok: true });
 });

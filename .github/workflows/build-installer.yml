@@ -41,29 +41,53 @@ jobs:
         working-directory: agent
         run: npm run build
 
+      # nssm.cc is a small hobby site that is sometimes down. The zip is cached
+      # (keyed by the pinned build name), so once one build has downloaded it,
+      # later builds never touch nssm.cc again.
+      - name: Cache NSSM archive
+        id: nssm-cache
+        uses: actions/cache@v4
+        with:
+          path: agent/installer/nssm.zip
+          key: nssm-2.24-101-g897c7ad
+
       - name: Download NSSM (Windows service wrapper)
         working-directory: agent/installer
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $headers = @{ "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) GitHubActionsCI" }
           # Using the 2.24-101 pre-release build, not the 2014 stable 2.24 -
           # nssm.cc itself recommends this build for Windows 10/Server 2016+
           # to avoid a known bug where the service fails to start.
-          # nssm.cc is occasionally down - retry a few times before failing.
-          $ok = $false
-          foreach ($attempt in 1..4) {
-            try {
-              Invoke-WebRequest -Uri "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip" -OutFile "nssm.zip" -Headers $headers
-              $ok = $true
-              break
-            } catch {
-              Write-Host "NSSM download attempt $attempt failed: $($_.Exception.Message)"
-              Start-Sleep -Seconds (5 * $attempt)
+          if (Test-Path "nssm.zip") {
+            Write-Host "Using cached nssm.zip"
+          } else {
+            $headers = @{ "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) GitHubActionsCI" }
+            # Primary source first, then a Wayback Machine copy of the same file
+            # (the "id_" form returns the original bytes, not an HTML wrapper).
+            $urls = @(
+              "https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip",
+              "https://web.archive.org/web/2024id_/https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip"
+            )
+            $ok = $false
+            foreach ($attempt in 1..3) {
+              foreach ($url in $urls) {
+                try {
+                  Invoke-WebRequest -Uri $url -OutFile "nssm.zip" -Headers $headers -TimeoutSec 90
+                  # sanity check: a real zip starts with "PK"
+                  $head = [System.IO.File]::ReadAllBytes("nssm.zip")[0..1]
+                  if ($head[0] -eq 0x50 -and $head[1] -eq 0x4B) { $ok = $true; break }
+                  Write-Host "Downloaded file from $url is not a zip - trying next source."
+                } catch {
+                  Write-Host "NSSM download failed from ${url} (attempt $attempt): $($_.Exception.Message)"
+                }
+              }
+              if ($ok) { break }
+              Start-Sleep -Seconds (10 * $attempt)
             }
+            if (-not $ok) { Remove-Item "nssm.zip" -ErrorAction SilentlyContinue; Write-Error "Could not download NSSM from any source."; exit 1 }
           }
-          if (-not $ok) { Write-Error "Could not download NSSM after 4 attempts."; exit 1 }
 
           Expand-Archive -Path "nssm.zip" -DestinationPath "nssm-extracted" -Force
 
@@ -80,7 +104,7 @@ jobs:
           }
 
           Copy-Item $nssmExe.FullName -Destination "nssm.exe" -Force
-          Remove-Item "nssm.zip", "nssm-extracted" -Recurse -Force
+          Remove-Item "nssm-extracted" -Recurse -Force
 
           if (-not (Test-Path "nssm.exe")) {
             Write-Error "nssm.exe was not created after copy."

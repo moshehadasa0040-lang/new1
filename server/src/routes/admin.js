@@ -74,8 +74,9 @@ router.get('/devices/:id/events', requireAdmin, async (req, res) => {
 
 // --- Rename ------------------------------------------------------------------
 router.post('/devices/:id/rename', requireAdmin, async (req, res) => {
-  const { name } = req.body || {};
+  const name = String((req.body && req.body.name) || '').trim().slice(0, 60);
   if (!name) return res.status(400).json({ error: 'name_required' });
+  if (!(await store.getDevice(req.params.id))) return res.status(404).json({ error: 'not_found' });
   await store.upsertDevice(req.params.id, { name });
   res.json({ ok: true });
 });

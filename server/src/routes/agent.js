@@ -30,7 +30,8 @@ router.post('/register', async (req, res) => {
       hostname: hostname || existing.hostname || '',
       agent_version: agentVersion || existing.agent_version || ''
     });
-    return res.json({ deviceId: hardwareId, deviceToken: existing.device_token });
+    await store.ensureNumber(existing);
+    return res.json({ deviceId: hardwareId, deviceToken: existing.device_token, deviceNumber: Number(existing.number) });
   }
 
   const deviceToken = nanoid(32);
@@ -47,9 +48,10 @@ router.post('/register', async (req, res) => {
     agent_version: agentVersion || '',
     created_at: new Date().toISOString()
   });
-  await store.addEvent(hardwareId, 'המכשיר נרשם לראשונה');
+  const deviceNumber = await store.ensureNumber({ id: hardwareId });
+  await store.addEvent(hardwareId, `המכשיר נרשם לראשונה (מחשב מספר ${deviceNumber.number})`);
 
-  res.json({ deviceId: hardwareId, deviceToken });
+  res.json({ deviceId: hardwareId, deviceToken, deviceNumber: Number(deviceNumber.number) });
 });
 
 // POST /api/agent/heartbeat
@@ -63,10 +65,13 @@ router.post('/heartbeat', requireDevice, async (req, res) => {
     last_seen: new Date().toISOString()
   });
 
+  await store.ensureNumber(device);
   const commands = await store.drainPendingCommands(device.id);
 
   res.json({
     unlockedUntil: device.unlocked_until || null,
+    // The agent shows this number in its tray icon menu / About window.
+    deviceNumber: Number(device.number),
     commands
   });
 });

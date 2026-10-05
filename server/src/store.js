@@ -8,6 +8,7 @@ const redis = require('./db');
 //   cmd:{id}                    hash    - a single command
 //   cmd:seq                     string  - auto-increment counter for command ids
 //   device:{id}:events          list    - recent event log (capped at 50)
+//   devices:numbers             set     - short human-friendly numbers (1,2,3...) currently in use
 // ---------------------------------------------------------------------------
 
 const MAX_EVENTS = 50;
@@ -29,19 +30,52 @@ async function upsertDevice(id, fields) {
   await redis.sadd('devices:index', id);
 }
 
+// --- Short device numbers --------------------------------------------------
+// Every device gets a small number (1, 2, 3...) shown in the dashboard AND in
+// the tray icon's menu/About on that PC, so when someone says "please unlock
+// computer 7" the admin knows exactly which card to press. The LOWEST free
+// number is used, so numbers stay short and are reused after a computer is
+// removed. SADD is atomic, so two computers registering at the same moment can
+// never claim the same number.
+async function claimNumber(id) {
+  const key = deviceKey(id);
+  for (let attempt = 0; attempt < 25; attempt++) {
+    const taken = new Set((await redis.smembers('devices:numbers')).map(Number));
+    let n = 1;
+    while (taken.has(n)) n += 1;
+    if ((await redis.sadd('devices:numbers', String(n))) === 1) {
+      // HSETNX: if a parallel request already numbered this device, keep that
+      // one and give ours back.
+      if ((await redis.hsetnx(key, 'number', String(n))) === 1) return n;
+      await redis.srem('devices:numbers', String(n));
+      return Number(await redis.hget(key, 'number'));
+    }
+  }
+  throw new Error('could_not_claim_device_number');
+}
+
+// Devices registered before numbers existed get theirs lazily, the first time
+// they are read (heartbeat or dashboard list).
+async function ensureNumber(device) {
+  if (device && device.id && !device.number) {
+    device.number = String(await claimNumber(device.id));
+  }
+  return device;
+}
+
 async function listDevices() {
   const ids = await redis.smembers('devices:index');
   if (!ids.length) return [];
   const pipeline = redis.pipeline();
   ids.forEach((id) => pipeline.hgetall(deviceKey(id)));
   const results = await pipeline.exec();
-  return results
-    .map(([, data]) => data)
-    .filter((d) => d && d.id)
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const devices = results.map(([, data]) => data).filter((d) => d && d.id);
+  for (const d of devices) await ensureNumber(d);
+  return devices.sort((a, b) => Number(a.number) - Number(b.number));
 }
 
 async function deleteDevice(id) {
+  const number = await redis.hget(deviceKey(id), 'number');
   const pendingIds = await redis.lrange(`device:${id}:pending_cmds`, 0, -1);
   const pipeline = redis.pipeline();
   pendingIds.forEach((cmdId) => pipeline.del(`cmd:${cmdId}`));
@@ -50,6 +84,7 @@ async function deleteDevice(id) {
   pipeline.del(`device:${id}:events`);
   pipeline.del(`device:${id}:logs`);
   pipeline.srem('devices:index', id);
+  if (number) pipeline.srem('devices:numbers', number); // free the number for reuse
   await pipeline.exec();
 }
 
@@ -148,6 +183,7 @@ async function getLogs(deviceId) {
 
 module.exports = {
   getDevice,
+  ensureNumber,
   upsertDevice,
   listDevices,
   deleteDevice,

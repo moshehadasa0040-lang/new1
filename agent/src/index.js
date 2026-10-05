@@ -122,16 +122,39 @@ let lastHeartbeatOk = null; // null = unknown yet; used to log only on state CHA
 // (periodic lock scan, heartbeat, 401 re-registration) is allowed to
 // re-lock files or re-register the device while the unlock sweep runs.
 let uninstalling = false;
+// Short human-friendly computer number assigned by the server (1, 2, 3...).
+// Shown in the tray icon menu / About so people can say "computer 7" when
+// asking for an unlock. The server is the source of truth; we cache it.
+let deviceNumber = null;
+
+function rememberDeviceNumber(num) {
+  const n = Number(num);
+  if (!Number.isInteger(n) || n <= 0 || n === deviceNumber) return;
+  if (deviceNumber !== null) logger.log(`Computer number changed: ${deviceNumber} -> ${n}`);
+  else logger.log(`This computer's number in the dashboard: ${n}`);
+  deviceNumber = n;
+  try {
+    const state = identity.loadState();
+    if (state) identity.saveState({ ...state, deviceNumber: n });
+  } catch (e) {
+    // best-effort
+  }
+}
 
 async function ensureRegistered() {
   let state = identity.loadState();
   if (state && state.deviceId && state.deviceToken) {
+    // Cached number from the last run, so the tray can show it even before the
+    // first heartbeat (or while the server is unreachable). The next heartbeat
+    // corrects it if the server changed it.
+    if (state.deviceNumber) deviceNumber = Number(state.deviceNumber) || null;
     return state;
   }
   const hardwareId = identity.getHardwareId();
-  const { deviceId, deviceToken } = await api.register(hardwareId);
-  state = { deviceId, deviceToken };
+  const { deviceId, deviceToken, deviceNumber: num } = await api.register(hardwareId);
+  state = { deviceId, deviceToken, deviceNumber: num || null };
   identity.saveState(state);
+  rememberDeviceNumber(num);
   return state;
 }
 
@@ -146,6 +169,7 @@ function writeCurrentStatus(extra = {}) {
     version: require('../package.json').version,
     device_name: identity.getCustomDeviceName() || os.hostname(),
     device_id: deviceId || '',
+    device_number: deviceNumber || '',
     blocking: blocking ? 1 : 0,
     unlocked_until: !blocking && appliedUnlockUntil ? appliedUnlockUntil : '',
     server_ok: lastHeartbeatOk === false ? 0 : 1,
@@ -257,7 +281,8 @@ async function applyCommand(cmd) {
 async function heartbeatLoop() {
   if (uninstalling) return;
   try {
-    const { unlockedUntil, commands } = await api.heartbeat(deviceId, deviceToken);
+    const { unlockedUntil, commands, deviceNumber: num } = await api.heartbeat(deviceId, deviceToken);
+    rememberDeviceNumber(num);
     if (lastHeartbeatOk !== true) {
       logger.log(lastHeartbeatOk === false ? 'Server connection restored (heartbeat OK).' : 'First heartbeat OK - connected to server.');
       lastHeartbeatOk = true;

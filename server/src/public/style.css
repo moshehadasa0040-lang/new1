@@ -76,6 +76,31 @@ button:hover { opacity: 0.9; }
   flex-wrap: wrap;
   box-shadow: 0 1px 4px rgba(0,0,0,0.05);
 }
+.toolbar {
+  max-width: 900px;
+  margin: 16px auto 0;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toolbar input { flex: 1; padding: 10px 14px; border: 1px solid #d3d1c7; border-radius: 10px; font-size: 15px; }
+.device-count { font-size: 13px; color: #5f5e5a; white-space: nowrap; }
+.device-number {
+  min-width: 52px;
+  height: 52px;
+  padding: 0 8px;
+  border-radius: 14px;
+  background: #1f3a8a;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.device-head { display: flex; align-items: center; gap: 14px; min-width: 220px; }
 .device-info { min-width: 200px; }
 .device-name { font-weight: 500; font-size: 16px; }
 .device-meta { font-size: 12px; color: #5f5e5a; margin-top: 4px; }

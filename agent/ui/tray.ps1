@@ -75,6 +75,28 @@ function Get-State {
     return $r
 }
 
+function Get-NumberText($data) {
+    $n = $data['device_number']
+    if ($n) { return ('מחשב מספר ' + $n) }
+    return 'מספר המחשב: עדיין לא נקבע'
+}
+
+# The computer number is announced once (per number) so the person at this PC
+# knows what to say when asking for an unlock. Remembered per Windows user.
+$script:AnnounceFile = Join-Path $env:LOCALAPPDATA 'ContentBlockerTray\announced-number.txt'
+function Announce-NumberOnce($data) {
+    $n = $data['device_number']
+    if (-not $n) { return }
+    $prev = ''
+    try { if (Test-Path -LiteralPath $script:AnnounceFile) { $prev = (Get-Content -LiteralPath $script:AnnounceFile -Raw).Trim() } } catch { }
+    if ($prev -eq $n) { return }
+    Show-Balloon $script:AppName ('מספר המחשב הזה בדשבורד: ' + $n + '. כשמבקשים פתיחה, ציינו את המספר.') 'Info'
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $script:AnnounceFile) | Out-Null
+        Set-Content -LiteralPath $script:AnnounceFile -Value $n -Encoding ASCII
+    } catch { }
+}
+
 # ---------- tray icon + menu ----------
 $script:Notify = New-Object System.Windows.Forms.NotifyIcon
 $script:Notify.Visible = $true
@@ -86,12 +108,16 @@ $script:MiStatus = New-Object System.Windows.Forms.ToolStripMenuItem
 $script:MiStatus.Enabled = $false
 $script:MiStatus.Font = New-Object System.Drawing.Font($script:MiStatus.Font, [System.Drawing.FontStyle]::Bold)
 [void]$menu.Items.Add($script:MiStatus)
+$script:MiNumber = New-Object System.Windows.Forms.ToolStripMenuItem
+$script:MiNumber.Enabled = $false
+$script:MiNumber.Font = New-Object System.Drawing.Font($script:MiNumber.Font.FontFamily, 11, [System.Drawing.FontStyle]::Bold)
+[void]$menu.Items.Add($script:MiNumber)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 
 $miAbout = New-Object System.Windows.Forms.ToolStripMenuItem('אודות')
 $miDash  = New-Object System.Windows.Forms.ToolStripMenuItem('פתח את הדשבורד בדפדפן')
 $miLogs  = New-Object System.Windows.Forms.ToolStripMenuItem('פתח את תיקיית היומנים (לוגים)')
-$miCopy  = New-Object System.Windows.Forms.ToolStripMenuItem('העתק מזהה מכשיר')
+$miCopy  = New-Object System.Windows.Forms.ToolStripMenuItem('העתק פרטי מחשב (לשליחה בהודעה)')
 $miRefresh = New-Object System.Windows.Forms.ToolStripMenuItem('רענן סטטוס')
 [void]$menu.Items.Add($miAbout)
 [void]$menu.Items.Add($miDash)
@@ -126,10 +152,15 @@ function Update-Ui([bool]$quiet) {
         'unlocked' { $script:Notify.Icon = $script:IconUnlocked }
         default    { $script:Notify.Icon = $script:IconWarn }
     }
-    $tip = $script:AppName + ' - ' + $st.Title
+    $numText = Get-NumberText $st.Data
+    $shortNum = ''
+    if ($st.Data['device_number']) { $shortNum = 'מחשב ' + $st.Data['device_number'] + ' | ' }
+    $tip = $shortNum + $st.Title
     if ($tip.Length -gt 63) { $tip = $tip.Substring(0, 63) }   # NotifyIcon.Text hard limit
     $script:Notify.Text = $tip
     $script:MiStatus.Text = $st.Title
+    $script:MiNumber.Text = $numText
+    Announce-NumberOnce $st.Data
     $ver = $st.Data['version']
     if ($ver) { $script:MiVersion.Text = $script:AppName + '  v' + $ver }
 
@@ -160,7 +191,7 @@ function Show-About {
     $f.MinimizeBox = $false
     $f.ShowInTaskbar = $true
     $f.BackColor = [System.Drawing.Color]::White
-    $f.ClientSize = New-Object System.Drawing.Size(460, 478)
+    $f.ClientSize = New-Object System.Drawing.Size(460, 520)
 
     $hdr = New-Object System.Windows.Forms.Panel
     $hdr.Dock = 'Top'; $hdr.Height = 170
@@ -192,6 +223,15 @@ function Show-About {
     $t2.SetBounds(0, 142, 460, 22)
     $hdr.Controls.Add($t2)
 
+    $numLbl = New-Object System.Windows.Forms.Label
+    $numLbl.Text = (Get-NumberText $d)
+    $numLbl.RightToLeft = 'Yes'
+    $numLbl.ForeColor = [System.Drawing.Color]::FromArgb(24, 44, 140)
+    $numLbl.Font = New-Object System.Drawing.Font('Segoe UI', 22, [System.Drawing.FontStyle]::Bold)
+    $numLbl.TextAlign = 'MiddleCenter'
+    $numLbl.SetBounds(0, 176, 460, 52)
+    $f.Controls.Add($numLbl)
+
     $ver = $d['version']; if (-not $ver) { $ver = '-' }
     $dev = $d['device_name']; if (-not $dev) { $dev = $env:COMPUTERNAME }
     $locked = $d['locked_count']; if (-not $locked) { $locked = '0' }
@@ -215,7 +255,7 @@ function Show-About {
     $info.RightToLeft = 'Yes'
     $info.Font = New-Object System.Drawing.Font('Segoe UI', 10.5)
     $info.TextAlign = 'MiddleCenter'
-    $info.SetBounds(20, 178, 420, 156)
+    $info.SetBounds(20, 232, 420, 150)
     $f.Controls.Add($info)
 
     $about = New-Object System.Windows.Forms.Label
@@ -224,7 +264,7 @@ function Show-About {
     $about.ForeColor = [System.Drawing.Color]::FromArgb(90, 90, 90)
     $about.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     $about.TextAlign = 'MiddleCenter'
-    $about.SetBounds(30, 336, 400, 52)
+    $about.SetBounds(30, 384, 400, 48)
     $f.Controls.Add($about)
 
     $logPath = New-Object System.Windows.Forms.Label
@@ -233,18 +273,18 @@ function Show-About {
     $logPath.ForeColor = [System.Drawing.Color]::FromArgb(120, 120, 120)
     $logPath.Font = New-Object System.Drawing.Font('Segoe UI', 8.5)
     $logPath.TextAlign = 'MiddleCenter'
-    $logPath.SetBounds(10, 392, 440, 20)
+    $logPath.SetBounds(10, 436, 440, 20)
     $f.Controls.Add($logPath)
 
     $btnDash = New-Object System.Windows.Forms.Button
     $btnDash.Text = 'פתח דשבורד'
-    $btnDash.SetBounds(70, 424, 150, 34)
+    $btnDash.SetBounds(70, 468, 150, 34)
     $btnDash.Add_Click({ Open-Dashboard })
     $f.Controls.Add($btnDash)
 
     $btnClose = New-Object System.Windows.Forms.Button
     $btnClose.Text = 'סגור'
-    $btnClose.SetBounds(240, 424, 150, 34)
+    $btnClose.SetBounds(240, 468, 150, 34)
     $btnClose.Add_Click({ $script:AboutForm.Close() })
     $f.Controls.Add($btnClose)
     $f.AcceptButton = $btnClose
@@ -264,8 +304,11 @@ $miCopy.Add_Click({
     try {
         $id = (Read-Status)['device_id']
         if ($id) {
-            [System.Windows.Forms.Clipboard]::SetText($id)
-            Show-Balloon $script:AppName 'מזהה המכשיר הועתק ללוח' 'Info'
+            $d = Read-Status
+            $num = $d['device_number']; if (-not $num) { $num = '?' }
+            $details = 'מחשב מספר ' + $num + ' | שם: ' + $d['device_name'] + ' | מזהה: ' + $id
+            [System.Windows.Forms.Clipboard]::SetText($details)
+            Show-Balloon $script:AppName 'פרטי המחשב הועתקו ללוח, אפשר להדביק בהודעה' 'Info'
         } else {
             Show-Balloon $script:AppName 'מזהה המכשיר עדיין לא זמין' 'Warning'
         }

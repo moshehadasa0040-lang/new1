@@ -1,6 +1,9 @@
 const loginScreen = document.getElementById('login-screen');
 const dashboardScreen = document.getElementById('dashboard-screen');
 const deviceList = document.getElementById('device-list');
+const searchInput = document.getElementById('search-input');
+const deviceCount = document.getElementById('device-count');
+let lastDevices = [];
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -87,11 +90,34 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 async function loadDevices() {
   await runAction(async () => {
     const { devices } = await api('/api/admin/devices');
+    lastDevices = devices;
     renderDevices(devices);
   });
 }
 
-function renderDevices(devices) {
+// Typing in the search box filters by computer number, name or Windows name.
+// Search matches the number exactly first ("7" finds computer 7, not 17).
+searchInput?.addEventListener('input', () => renderDevices(lastDevices));
+
+function filterDevices(devices) {
+  const q = (searchInput?.value || '').trim().toLowerCase();
+  if (!q) return devices;
+  const exact = devices.filter((d) => String(d.number) === q.replace(/^#/, ''));
+  if (exact.length) return exact;
+  return devices.filter((d) =>
+    String(d.number).includes(q.replace(/^#/, '')) ||
+    (d.name || '').toLowerCase().includes(q) ||
+    (d.hostname || '').toLowerCase().includes(q)
+  );
+}
+
+function renderDevices(allDevices) {
+  if (deviceCount) deviceCount.textContent = allDevices.length ? `${allDevices.length} מחשבים` : '';
+  const devices = filterDevices(allDevices);
+  if (allDevices.length && !devices.length) {
+    deviceList.innerHTML = '<div class="empty-state">לא נמצא מחשב שמתאים לחיפוש.</div>';
+    return;
+  }
   if (!devices.length) {
     deviceList.innerHTML = '<div class="empty-state">אין עדיין מחשבים רשומים. התקן את ה-agent על מחשב כדי שיופיע כאן.</div>';
     return;
@@ -102,6 +128,8 @@ function renderDevices(devices) {
     const isUnlocked = d.unlocked_until && new Date(d.unlocked_until) > new Date();
     return `
       <div class="device-card" data-id="${d.id}">
+        <div class="device-head">
+          <div class="device-number" title="מספר המחשב - מוצג גם באייקון בצד המחשב">${escapeHtml(String(d.number || '?'))}</div>
         <div class="device-info">
           <div class="device-name">${escapeHtml(d.name)}</div>
           <div class="device-meta">
@@ -109,6 +137,7 @@ function renderDevices(devices) {
             ${d.agent_version ? 'גרסה ' + escapeHtml(d.agent_version) + ' · ' : ''}
             נראה לאחרונה: ${d.last_seen ? new Date(d.last_seen).toLocaleString('he-IL') : 'מעולם לא'}
           </div>
+        </div>
         </div>
         <div>
           <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
@@ -118,6 +147,7 @@ function renderDevices(devices) {
         </div>
         <div class="device-actions">
           <button class="unlock-btn">פתח ל-15 דק'</button>
+          <button class="rename-btn secondary">שנה שם</button>
           ${isUnlocked ? '<button class="lock-btn secondary">נעל מיד</button>' : ''}
           <button class="rules-btn secondary">ערוך רשימת חסימה</button>
           <button class="logs-btn secondary">בקש לוגים</button>
@@ -131,6 +161,16 @@ function renderDevices(devices) {
 
   deviceList.querySelectorAll('.device-card').forEach((card) => {
     const id = card.dataset.id;
+    card.querySelector('.rename-btn')?.addEventListener('click', () => runAction(async () => {
+      const current = lastDevices.find((x) => x.id === id);
+      const name = prompt('שם חדש למחשב (למשל: "סלון" או "החדר של דני"):', current ? current.name : '');
+      if (!name || !name.trim()) return;
+      await api(`/api/admin/devices/${id}/rename`, {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim() })
+      });
+      await loadDevices();
+    }));
     card.querySelector('.unlock-btn')?.addEventListener('click', () => runAction(async () => {
       const minutes = prompt('לכמה דקות לפתוח?', '15');
       if (!minutes) return;

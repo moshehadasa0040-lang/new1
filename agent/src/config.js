@@ -24,6 +24,11 @@ module.exports = {
   // exists mainly to catch newly copied/downloaded video files.
   FILE_LOCK_SCAN_INTERVAL_MS: 10 * 60 * 1000, // the 30s quick scan + real-time watcher catch new files
 
+  // Auto-update (see updater.js): the GitHub repo whose latest Release is the newest installer.
+  UPDATE_REPO: 'moshehadasa0040-lang/new1',
+  UPDATE_CHECK_INTERVAL_MS: 30 * 60 * 1000,
+  UPDATE_FIRST_CHECK_DELAY_MS: 2 * 60 * 1000,
+
   // Where the agent stores its local state (device id/token, cache of rules).
   DATA_DIR: 'C:\\ProgramData\\ContentBlockerAgent',
 

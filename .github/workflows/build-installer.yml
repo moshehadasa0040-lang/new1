@@ -2,9 +2,11 @@ name: Build agent installer
 
 # Builds a Windows installer (.exe) for the agent whenever code under
 # agent/ changes on main, or manually via the "Run workflow" button.
-# The finished installer is uploaded as a downloadable build artifact,
-# and also attached to a GitHub Release when you push a version tag
-# like "v1.0.0".
+# The finished installer is uploaded as a downloadable build artifact AND
+# published as a GitHub Release "v<version>" (version = agent/package.json).
+# Installed agents check the latest Release and update themselves (see
+# agent/src/updater.js), so to ship an update: bump the version in
+# agent/package.json, push to main, wait for this workflow to go green.
 
 on:
   push:
@@ -12,8 +14,6 @@ on:
     paths:
       - 'agent/**'
       - '.github/workflows/build-installer.yml'
-    tags:
-      - 'v*'
   workflow_dispatch: {}
 
 # Needed so softprops/action-gh-release can create a Release with the
@@ -116,10 +116,26 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Read agent version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content agent/package.json -Raw | ConvertFrom-Json).version
+          echo "v=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Agent version: $v"
+
       - name: Compile installer with Inno Setup
         working-directory: agent/installer
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=${{ steps.ver.outputs.v }}" setup.iss
+
+      - name: Write SHA-256 of the installer
+        shell: pwsh
+        run: |
+          $f = "dist-installer/ContentBlockerAgent-Setup.exe"
+          $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$f.sha256" -Value $h -NoNewline -Encoding ascii
+          Write-Host "SHA-256: $h"
 
       - name: Upload installer as build artifact
         uses: actions/upload-artifact@v4
@@ -127,8 +143,15 @@ jobs:
           name: ContentBlockerAgent-Setup
           path: dist-installer/ContentBlockerAgent-Setup.exe
 
-      - name: Attach installer to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Publishes (or refreshes) the Release the agents' auto-update looks at.
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-installer/ContentBlockerAgent-Setup.exe
+          tag_name: v${{ steps.ver.outputs.v }}
+          name: v${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: |
+            dist-installer/ContentBlockerAgent-Setup.exe
+            dist-installer/ContentBlockerAgent-Setup.exe.sha256

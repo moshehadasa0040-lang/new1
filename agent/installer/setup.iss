@@ -13,7 +13,10 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.12.2"
+; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.13.0"
+#endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -160,7 +163,8 @@ begin
       DeviceName := GetComputerNameString();
     SetArrayLength(Lines, 1);
     Lines[0] := DeviceName;
-    SaveStringsToUTF8File(ExpandConstant('{app}\device-name.txt'), Lines, False);
+    if not FileExists(ExpandConstant('{app}\device-name.txt')) then
+      SaveStringsToUTF8File(ExpandConstant('{app}\device-name.txt'), Lines, False);
     // Watchdog: every minute, start the service again if it is not running.
     if not Exec(ExpandConstant('{sys}\schtasks.exe'),
       '/create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\"' + ExpandConstant('{app}\watchdog.bat') + '\""',
@@ -232,7 +236,7 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden 
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; StatusMsg: "Applying program restrictions..."
 ; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
-Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser skipifsilent
 
 [UninstallRun]
 ; Order matters here: stop the service FIRST, so its periodic file-lock

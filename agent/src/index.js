@@ -13,6 +13,7 @@ const blocker = require('./blocker');
 const fileLock = require('./fileLock');
 const watcher = require('./watcher');
 const alerts = require('./alerts');
+const updater = require('./updater');
 const health = require('./health');
 const logger = require('./logger');
 const statusFile = require('./status');
@@ -417,6 +418,8 @@ async function main() {
   writeCurrentStatus();
   await heartbeatLoop();
   setInterval(heartbeatLoop, config.HEARTBEAT_INTERVAL_MS);
+  // Self-update from the latest GitHub Release (see updater.js).
+  updater.start({ isBusy: () => uninstalling, notify: (m) => alerts.report(m) });
   // Keeps `updated` fresh so the tray icon can tell the service is alive.
   setInterval(() => {
     if (!uninstalling) writeCurrentStatus();

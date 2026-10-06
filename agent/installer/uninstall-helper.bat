@@ -12,6 +12,10 @@ REM console to read from and fails immediately when launched without one.
 
 ping 127.0.0.1 -n 4 >nul
 
+REM The watchdog task and the SRP rules must go first (the watchdog would restart the service).
+schtasks /delete /tn ContentBlockerWatchdog /f >nul 2>&1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0srp-policy.ps1" -Remove >nul 2>&1
+
 REM Make sure NSSM can never restart the service while we tear it down.
 "%~dp0nssm.exe" set ContentBlockerAgent AppExit Default Exit >nul 2>&1
 "%~dp0nssm.exe" stop ContentBlockerAgent >nul 2>&1

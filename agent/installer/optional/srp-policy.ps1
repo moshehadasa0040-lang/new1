@@ -1,5 +1,6 @@
 <#
-  srp-policy.ps1 - OPTIONAL hardening. NOT wired into the installer. Run as Administrator.
+  srp-policy.ps1 - hardening, applied by the installer (task "srp") and removed on uninstall.
+    Can also be run by hand as Administrator.
 
   What it does
     Adds Software Restriction Policy (SRP) rules that stop programs from RUNNING out of
@@ -12,6 +13,7 @@
   Usage
     .\srp-policy.ps1 -Apply                       # add the rules
     .\srp-policy.ps1 -Apply -ExtraPaths 'D:\','E:\'   # also block running from these drives (USB letters)
+    .\srp-policy.ps1 -Apply -BlockOtherDrives     # also block every drive letter that is not a fixed disk now (future USB sticks)
     .\srp-policy.ps1 -Remove                      # take every rule this script added out again
     .\srp-policy.ps1 -Status
 
@@ -24,6 +26,7 @@ param(
   [switch]$Apply,
   [switch]$Remove,
   [switch]$Status,
+  [switch]$BlockOtherDrives,
   [string[]]$ExtraPaths = @()
 )
 
@@ -38,10 +41,23 @@ $blockedPaths = @(
   '%USERPROFILE%\Desktop',
   '%USERPROFILE%\Videos',
   '%USERPROFILE%\Documents',
+  '%USERPROFILE%\Pictures',
+  '%USERPROFILE%\Music',
   '%USERPROFILE%\OneDrive',
   '%PUBLIC%',
   '%TEMP%'
 ) + $ExtraPaths
+
+# Letters D..Z that are NOT a fixed disk right now (USB sticks, optical, network drives
+# that appear later). The system drive and internal disks are left alone.
+if ($BlockOtherDrives) {
+  $fixed = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID.ToUpper() })
+  $sysDrive = ([string]$env:SystemDrive).ToUpper()
+  foreach ($code in 68..90) {
+    $d = ([char]$code).ToString() + ':'
+    if ($d -ne $sysDrive -and $fixed -notcontains $d) { $blockedPaths += ($d + '\') }
+  }
+}
 
 function Test-Admin {
   $p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())

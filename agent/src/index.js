@@ -12,6 +12,7 @@ const api = require('./api');
 const blocker = require('./blocker');
 const fileLock = require('./fileLock');
 const watcher = require('./watcher');
+const alerts = require('./alerts');
 const logger = require('./logger');
 const statusFile = require('./status');
 const { selfUninstall } = require('./uninstall');
@@ -375,6 +376,12 @@ async function main() {
 
   // Near-real-time: react to new/renamed files within about a second (see watcher.js).
   if (config.REALTIME_WATCH) watcher.start();
+
+  // Tamper alerts go to the dashboard as events (needs a registered device).
+  alerts.setSender(async (message) => {
+    if (!deviceId || !deviceToken) throw new Error('not registered yet');
+    await api.ack(deviceId, deviceToken, undefined, message);
+  });
 
   // Quick re-scan every ~30s catches newly created/copied videos fast; the
   // full scan every 3 min catches everything else. Both are guarded inside

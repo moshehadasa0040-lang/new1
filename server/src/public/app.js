@@ -150,6 +150,7 @@ function renderDevices(allDevices) {
           <button class="rename-btn secondary">שנה שם</button>
           ${isUnlocked ? '<button class="lock-btn secondary">נעל מיד</button>' : ''}
           <button class="rules-btn secondary">ערוך רשימת חסימה</button>
+          <button class="events-btn secondary">אירועים והתראות</button>
           <button class="logs-btn secondary">בקש לוגים</button>
           <button class="download-logs-btn secondary">הורד לוגים</button>
           <button class="uninstall-btn danger">הסר תוכנה</button>
@@ -187,7 +188,7 @@ function renderDevices(allDevices) {
     card.querySelector('.rules-btn')?.addEventListener('click', () => runAction(async () => {
       const current = prompt(
         'רשימת תהליכים לחסימה, מופרדים בפסיק (למשל: vlc.exe,chrome.exe):',
-        'vlc.exe,wmplayer.exe,mpc-hc64.exe,Video.UI.exe,MediaPlayer.exe'
+        'vlc.exe,mpc-hc64.exe,mpc-be64.exe,mpv.exe,PotPlayerMini64.exe,Video.UI.exe'
       );
       if (!current) return;
       const blockedProcesses = current.split(',').map((s) => s.trim()).filter(Boolean);
@@ -196,6 +197,14 @@ function renderDevices(allDevices) {
         body: JSON.stringify({ blockedProcesses })
       });
       alert('הרשימה תתעדכן בפעם הבאה שהמחשב יתחבר (עד דקה).');
+    }));
+    card.querySelector('.events-btn')?.addEventListener('click', () => runAction(async () => {
+      const { events } = await api(`/api/admin/devices/${id}/events`);
+      if (!events || !events.length) {
+        alert('אין אירועים להצגה.');
+        return;
+      }
+      alert(events.slice(0, 20).map((e) => `${new Date(e.created_at).toLocaleString('he-IL')}  ${e.message}`).join('\n'));
     }));
     card.querySelector('.logs-btn')?.addEventListener('click', () => runAction(async () => {
       await api(`/api/admin/devices/${id}/request-logs`, { method: 'POST' });

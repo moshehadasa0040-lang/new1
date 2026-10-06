@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile);
 const ICACLS = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
 const config = require('./config');
 const logger = require('./logger');
+const alerts = require('./alerts');
 
 // ---------------------------------------------------------------------------
 // Real, OS-level video file blocking.
@@ -39,6 +40,8 @@ const LOCKED_FILES_PATH = path.join(config.DATA_DIR, 'locked-files.json');
 //   S-1-5-32-545 = BUILTIN\Users (standard local user accounts)
 //   S-1-5-11     = Authenticated Users (covers domain accounts too)
 const DENY_SIDS = ['*S-1-5-32-545', '*S-1-5-11'];
+// Locked files are owned by SYSTEM (S-1-5-18), see lockFile().
+const OWNER_SID = '*S-1-5-18';
 
 function loadLockedSet() {
   try {
@@ -261,7 +264,17 @@ async function lockFile(filePath, onFail) {
   if (inFlight.has(filePath)) return 'already';
   inFlight.add(filePath);
   try {
-    await execFileAsync(ICACLS, [filePath, ...denyArgs(), '/Q'], { windowsHide: true });
+    // /setowner SYSTEM first: the OWNER of a file can always rewrite its permissions,
+    // even as a standard user (icacls /reset, Properties > Security). Without this a
+    // child who downloaded the video (= owner) could remove our deny entry himself.
+    // Both operations in ONE icacls call; if the owner change is refused for any reason,
+    // fall back to the deny-only call so the file is still locked.
+    try {
+      await execFileAsync(ICACLS, [filePath, '/setowner', OWNER_SID, ...denyArgs(), '/Q'], { windowsHide: true });
+    } catch (e1) {
+      await execFileAsync(ICACLS, [filePath, ...denyArgs(), '/Q'], { windowsHide: true });
+      logger.log(`[lock] owner not changed (deny only): ${filePath}`);
+    }
     lockedFiles.add(filePath);
     return 'locked';
   } catch (e) {
@@ -396,6 +409,7 @@ async function reconcileTracked(shouldContinue) {
     logger.log(
       `Reconcile: ${gone} tracked file(s) no longer exist (forgotten), ${reset} had lost their lock (will be re-locked).`
     );
+    if (reset > 0) alerts.report(`${reset} נעילות של סרטונים הוסרו ידנית ונעשתה נעילה מחדש`);
   }
 }
 
@@ -494,9 +508,11 @@ function scheduleSave() {
 
 // Locks one file if it is a video (by extension or by content).
 // Returns 'locked' | 'already' | 'failed' | 'skip' | 'gone'.
-async function lockIfVideo(filePath) {
+async function lockIfVideo(filePath, opts = {}) {
   if (lockedFiles.has(filePath) || isExcluded(filePath)) return 'already';
   let isVideo = hasMovieExt(filePath);
+  // opts.extOnly: do not read file contents (used for noisy folders such as AppData).
+  if (!isVideo && opts.extOnly) return 'skip';
   if (!isVideo) {
     let st;
     try {

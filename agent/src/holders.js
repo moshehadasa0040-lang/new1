@@ -4,6 +4,7 @@ const path = require('path');
 const config = require('./config');
 const logger = require('./logger');
 const blocker = require('./blocker');
+const alerts = require('./alerts');
 
 // ---------------------------------------------------------------------------
 // Closes whoever still has a just-locked video open.
@@ -188,6 +189,9 @@ async function drainQueue() {
       if (!blocker.isBlocking()) break;
       const ok = await kill(h.pid);
       logger.log(`[holders] ${ok ? 'Closed' : 'Could not close'} ${h.name || 'pid ' + h.pid} (pid ${h.pid}) - it still had a locked video open.`);
+      if (ok && !blocker.getBlockList().some((n) => n.toLowerCase() === h.name.toLowerCase())) {
+        alerts.report(`תוכנה לא מוכרת נסגרה בכוח כי פתחה סרטון נעול: ${h.name}`);
+      }
     }
   } catch (e) {
     logger.log(`[holders] error: ${e.message}`);

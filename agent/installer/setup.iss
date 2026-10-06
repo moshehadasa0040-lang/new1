@@ -47,6 +47,12 @@ Type: files; Name: "{app}\device-name.txt"
 Type: filesandordirs; Name: "{commonappdata}\ContentBlockerAgent"
 Type: dirifempty; Name: "{app}"
 
+[Tasks]
+; Stops programs from RUNNING out of folders a standard user can write to (Downloads,
+; Desktop, Temp, USB drives ...), so a freshly downloaded or portable video player
+; cannot start. Administrators are exempt. Untick to skip. See optional\srp-policy.ps1.
+Name: "srp"; Description: "Block running programs from Downloads, Desktop, Temp and USB drives (recommended)"
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
@@ -54,6 +60,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\dist\content-blocker-agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "nssm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uninstall-helper.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "watchdog.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: "optional\srp-policy.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; User-facing UI (see agent\ui): tray icon with About + status menu, the
 ; installer's live progress window, a launcher that starts PowerShell with no
 ; console window, and the logo/icons.
@@ -130,6 +138,7 @@ begin
     // exe open, which makes copying the new files fail or get postponed
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ContentBlockerWatchdog /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     OldNssm := ExpandConstant('{app}\nssm.exe');
     if FileExists(OldNssm) then
       Exec(OldNssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -152,6 +161,13 @@ begin
     SetArrayLength(Lines, 1);
     Lines[0] := DeviceName;
     SaveStringsToUTF8File(ExpandConstant('{app}\device-name.txt'), Lines, False);
+    // Watchdog: every minute, start the service again if it is not running.
+    if not Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\"' + ExpandConstant('{app}\watchdog.bat') + '\""',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      AppendLog('WARNING: could not create the watchdog task (exit ' + IntToStr(ResultCode) + ').')
+    else
+      AppendLog('Watchdog task created.');
     AppendLog('Files copied, registering and starting the service next.');
   end;
   if CurStep = ssDone then
@@ -214,6 +230,7 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 104
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" install-splash.ps1"; Flags: nowait runhidden skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; StatusMsg: "Applying program restrictions..."
 ; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser
 
@@ -222,6 +239,8 @@ Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; F
 ; scan can't re-lock a file in the instant between --unlock-files removing
 ; the deny ACE and the service being removed. Then restore file access,
 ; then remove the service registration entirely.
+Filename: "{sys}\schtasks.exe"; Parameters: "/delete /tn ContentBlockerWatchdog /f"; Flags: runhidden waituntilterminated; StatusMsg: "Removing watchdog..."
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Remove"; Flags: runhidden waituntilterminated; StatusMsg: "Removing program restrictions..."
 Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Stopping service..."
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--unlock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Restoring file access..."
 Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated; StatusMsg: "Removing service..."

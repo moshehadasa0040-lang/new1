@@ -62,7 +62,11 @@ async function drain() {
       // A file that is being written keeps firing 'change'; don't re-read it constantly.
       if (evt === 'change' && (negativeUntil.get(file) || 0) > Date.now()) continue;
       try {
-        const r = await fileLock.lockIfVideo(file);
+        // Noisy folders (AppData: browser/app caches change constantly): decide by extension
+      // only, do not open and read every changed file there.
+      const lowerFile = file.toLowerCase();
+      const noisy = config.DEEP_SWEEP_SKIP_DIRS.some((d) => lowerFile.includes('\\' + d + '\\'));
+      const r = await fileLock.lockIfVideo(file, { extOnly: noisy });
         if (r === 'locked') lockedNow.push(file);
         else if (r === 'skip') negativeUntil.set(file, Date.now() + 5000);
       } catch (e) {

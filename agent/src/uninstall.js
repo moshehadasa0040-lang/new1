@@ -52,6 +52,9 @@ async function selfUninstall() {
   const installDir = path.dirname(process.execPath);
   const helperPath = path.join(installDir, 'uninstall-helper.bat');
 
+  // The watchdog task would restart the service while we are removing it.
+  await runCmd('schtasks /delete /tn ContentBlockerWatchdog /f');
+
   cleanupIdentity();
 
   if (!fs.existsSync(helperPath)) {

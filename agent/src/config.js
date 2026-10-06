@@ -16,7 +16,7 @@ module.exports = {
   HEARTBEAT_INTERVAL_MS: 45 * 1000,
 
   // How often the agent scans and kills blocked processes (ms).
-  BLOCK_SCAN_INTERVAL_MS: 3 * 1000,
+  BLOCK_SCAN_INTERVAL_MS: 1000,
 
   // How often the agent re-scans all drives for video files to lock at the
   // OS permission level (ms). This is a heavier operation than the process
@@ -73,7 +73,8 @@ module.exports = {
     // very likely what's actually installed and used on most Windows 10/11
     // machines by default, more so than any third-party player above.
     'Video.UI.exe',
-    'MediaPlayer.exe'
+    'MediaPlayer.exe',
+    'Microsoft.Media.Player.exe'
   ],
   // NOT included by default: chrome.exe / msedge.exe / firefox.exe, etc.
   // Most streaming today happens inside a browser tab, which no process
@@ -86,5 +87,49 @@ module.exports = {
   // File extensions considered "movie files". These are what actually get
   // their NTFS permissions locked down (see fileLock.js) - this is the real
   // enforcement mechanism, not just a label for logging.
-  MOVIE_EXTENSIONS: ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.m4v', '.mpg', '.mpeg', '.webm']
+  // ('.ts' and '.mod' are deliberately NOT here: TypeScript sources etc. Real MPEG-TS
+  // video is still caught by the content check, see fileLock.sniffIsVideo.)
+  MOVIE_EXTENSIONS: [
+    '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.m4v', '.mpg', '.mpeg', '.webm',
+    '.3gp', '.3g2', '.vob', '.rm', '.rmvb', '.mts', '.m2ts', '.ogv', '.f4v', '.asf', '.divx'
+  ],
+
+  // --- Near-real-time protection (agent/src/watcher.js) -----------------------
+  // Listens to Windows' own file-change notifications (ReadDirectoryChangesW,
+  // via fs.watch) on every fixed/removable drive, so a new or renamed video is
+  // locked within ~a second instead of waiting for the next periodic scan.
+  REALTIME_WATCH: true,
+  WATCH_DEBOUNCE_MS: 40,
+  // How often to look for newly plugged-in drives (USB) to start watching.
+  WATCH_DRIVE_REFRESH_MS: 20 * 1000,
+
+  // --- Closing whoever already has a freshly locked video open ---------------
+  // A lock does not affect a handle that was opened BEFORE it. So right after
+  // locking a file, ask Windows (Restart Manager) which processes still hold it
+  // and close those that run in a user session - whatever their name (a player
+  // that is not on the block list, a renamed exe). Processes below, services
+  // (session 0, e.g. antivirus) and the agent itself are never touched.
+  KILL_FILE_HOLDERS: true,
+  HOLDER_RECHECK_DELAY_MS: 1500, // let a browser/copy tool finish and close its own handle first
+  PROTECTED_PROCESSES: [
+    'explorer.exe', 'dllhost.exe', 'taskhostw.exe', 'sihost.exe', 'runtimebroker.exe',
+    'searchindexer.exe', 'searchprotocolhost.exe', 'searchhost.exe', 'shellexperiencehost.exe',
+    'startmenuexperiencehost.exe', 'applicationframehost.exe', 'ctfmon.exe', 'smartscreen.exe',
+    'msmpeng.exe', 'onedrive.exe', 'dropbox.exe',
+    'cmd.exe', 'powershell.exe', 'conhost.exe', 'wt.exe',
+    // Browsers: they hold a file while DOWNLOADING it; killing them on every
+    // finished download would be far worse than the problem. (Local playback in
+    // a browser is still stopped because the file itself is locked.)
+    'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe', 'iexplore.exe'
+  ],
+
+  // --- Content detection (renamed / disguised videos) -------------------------
+  // Files are identified by their first bytes, not only by extension. No size
+  // threshold other than "big enough to contain a header".
+  SNIFF_BYTES: 4096,
+  SNIFF_MIN_FILE_BYTES: 12,
+  // Deep content sweep of the user profile folders (finds videos renamed to
+  // .txt/.dll/.jpg ...). Results are cached by (mtime,size), so repeats are cheap.
+  DEEP_SWEEP_INTERVAL_MS: 10 * 60 * 1000,
+  DEEP_SWEEP_SKIP_DIRS: ['appdata', 'node_modules', '.git']
 };

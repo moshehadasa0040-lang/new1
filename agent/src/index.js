@@ -11,6 +11,7 @@ const identity = require('./identity');
 const api = require('./api');
 const blocker = require('./blocker');
 const fileLock = require('./fileLock');
+const watcher = require('./watcher');
 const logger = require('./logger');
 const statusFile = require('./status');
 const { selfUninstall } = require('./uninstall');
@@ -117,6 +118,7 @@ let temporaryUnlockTimer = null;
 let appliedUnlockUntil = null; // dedup guard - avoid reapplying the same unlock on every heartbeat
 let lockScanTimer = null;
 let quickScanTimer = null;
+let deepSweepTimer = null;
 let lastHeartbeatOk = null; // null = unknown yet; used to log only on state CHANGES
 // Set the moment a remote 'uninstall' command starts. From then on, nothing
 // (periodic lock scan, heartbeat, 401 re-registration) is allowed to
@@ -188,6 +190,7 @@ async function reLockNow() {
   await fileLock.lockPriority(keepGoing, { force: true });
   writeCurrentStatus();
   await fileLock.lockAll(keepGoing, { force: true });
+  await fileLock.lockDisguised(keepGoing, { force: true });
 }
 
 async function temporarilyUnlockNow() {
@@ -242,6 +245,8 @@ async function applyCommand(cmd) {
       clearTimeout(temporaryUnlockTimer);
       clearInterval(lockScanTimer);
       clearInterval(quickScanTimer);
+      clearInterval(deepSweepTimer);
+      watcher.stop();
       blocker.setBlocking(false);
       blocker.stop();
       // Give an in-flight lockFile() a moment to finish so the sweep below
@@ -365,7 +370,11 @@ async function main() {
   fileLock
     .lockPriority(keepGoing)
     .then(() => fileLock.lockAll(keepGoing))
+    .then(() => fileLock.lockDisguised(keepGoing))
     .catch((err) => logger.log(`Initial file-lock scan failed: ${err.message}`));
+
+  // Near-real-time: react to new/renamed files within about a second (see watcher.js).
+  if (config.REALTIME_WATCH) watcher.start();
 
   // Quick re-scan every ~30s catches newly created/copied videos fast; the
   // full scan every 3 min catches everything else. Both are guarded inside
@@ -380,6 +389,13 @@ async function main() {
       fileLock.lockAll(keepGoing).catch((err) => logger.log(`File-lock scan failed: ${err.message}`));
     }
   }, config.FILE_LOCK_SCAN_INTERVAL_MS);
+
+  // Content sweep (videos renamed to another extension), cached so repeats are cheap.
+  deepSweepTimer = setInterval(() => {
+    if (!uninstalling && blocker.isBlocking()) {
+      fileLock.lockDisguised(keepGoing).catch((err) => logger.log(`Content sweep failed: ${err.message}`));
+    }
+  }, config.DEEP_SWEEP_INTERVAL_MS);
 
   writeCurrentStatus();
   await heartbeatLoop();

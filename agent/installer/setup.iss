@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.9.6"
+#define MyAppVersion "1.10.0"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"
@@ -66,6 +66,12 @@ Source: "..\ui\assets\*"; DestDir: "{app}\assets"; Excludes: "wizard-*.bmp"; Fla
 ; Tray icon starts for every user at logon. It only displays state - the
 ; protection itself is the Windows service, so closing the icon unblocks nothing.
 Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ContentBlockerTray"; ValueData: """{sys}\wscript.exe"" ""{app}\ps-hidden.vbs"" tray.ps1"; Flags: uninsdeletevalue
+
+; Safe Mode: without these keys Windows does not start the service in Safe Mode
+; (so nothing new would be locked there). Minimal = Safe Mode, Network = Safe Mode
+; with Networking. The default value must be the word "Service". Removed on uninstall.
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\{#MyServiceName}"; ValueType: string; ValueData: "Service"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\SafeBoot\Network\{#MyServiceName}"; ValueType: string; ValueData: "Service"; Flags: uninsdeletekey
 
 [Code]
 var

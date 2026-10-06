@@ -92,6 +92,60 @@ function isExcluded(filePath) {
   return config.EXCLUDED_PATH_PREFIXES.some((prefix) => lower.startsWith(prefix.toLowerCase()));
 }
 
+// --- Content detection ---------------------------------------------------------
+// Identifies a video by its first bytes, so a file renamed to .txt / .dll / .jpg
+// (or one with no extension, or a download still called .crdownload / .part) is
+// still recognised. Needs only a few bytes, so even tiny clips are caught.
+
+// ISO-BMFF ("ftyp") brands that are images or audio - must NOT be treated as video.
+const NON_VIDEO_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'avif', 'avis', 'crx ', 'M4A ', 'M4B ', 'M4P ', 'F4A ', 'F4B ']);
+const ASF_GUID = Buffer.from('3026b2758e66cf11a6d900aa0062ce6c', 'hex');
+
+function isVideoHeader(b) {
+  const n = b.length;
+  if (n < 12) return false;
+  // MP4 / MOV / 3GP / M4V ...
+  if (b.toString('latin1', 4, 8) === 'ftyp') return !NON_VIDEO_BRANDS.has(b.toString('latin1', 8, 12));
+  const at4 = b.toString('latin1', 4, 8);
+  if (at4 === 'moov' || at4 === 'mdat') return true; // old QuickTime
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return true; // Matroska / WebM
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'AVI ') return true; // AVI
+  if (n >= 16 && b.subarray(0, 16).equals(ASF_GUID)) return true; // WMV / ASF
+  if (b[0] === 0x46 && b[1] === 0x4c && b[2] === 0x56 && b[3] === 0x01) return true; // FLV
+  if (b[0] === 0 && b[1] === 0 && b[2] === 1 && (b[3] === 0xba || b[3] === 0xb3)) return true; // MPEG PS / video
+  if (b.toString('latin1', 0, 4) === '.RMF') return true; // RealMedia
+  if (n >= 389) {
+    if (b[0] === 0x47 && b[188] === 0x47 && b[376] === 0x47) return true; // MPEG-TS
+    if (b[4] === 0x47 && b[196] === 0x47 && b[388] === 0x47) return true; // M2TS
+  }
+  return false;
+}
+
+async function sniffIsVideo(filePath) {
+  let fh;
+  try {
+    fh = await fs.promises.open(filePath, 'r');
+    const buf = Buffer.alloc(config.SNIFF_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return isVideoHeader(buf.subarray(0, bytesRead));
+  } catch (e) {
+    return false; // unreadable (already locked, in use, gone) - nothing to decide here
+  } finally {
+    if (fh) await fh.close().catch(() => {});
+  }
+}
+
+// path -> "mtimeMs:size" of files already checked and found NOT to be video, so
+// repeated sweeps / change events don't re-read unchanged files.
+const sniffCache = new Map();
+function rememberNotVideo(file, st) {
+  if (sniffCache.size > 500000) sniffCache.clear();
+  sniffCache.set(file, `${st.mtimeMs}:${st.size}`);
+}
+function seenNotVideo(file, st) {
+  return sniffCache.get(file) === `${st.mtimeMs}:${st.size}`;
+}
+
 // Finds every video file under `root` by walking the folder tree IN NODE
 // (fs.readdir), not by parsing the text output of `dir` / PowerShell.
 //
@@ -107,6 +161,8 @@ function isExcluded(filePath) {
 //   skipExcluded  - don't descend into Windows / Program Files (default true;
 //                   the unlock sweep passes false so it covers everything)
 //   skipDirNames  - folder names (case-insensitive) to skip, e.g. 'appdata'
+//   others        - optional array; files WITHOUT a video extension are pushed here
+//                   (used by the content sweep)
 async function findVideoFiles(root, opts = {}) {
   const skipExcluded = opts.skipExcluded !== false;
   const skipNames = new Set((opts.skipDirNames || []).map((n) => n.toLowerCase()));
@@ -131,8 +187,9 @@ async function findVideoFiles(root, opts = {}) {
                 const next = dir + entry.name + path.sep;
                 if (skipExcluded && isExcluded(next)) continue;
                 stack.push(next);
-              } else if (entry.isFile() && hasMovieExt(entry.name)) {
-                found.push(dir + entry.name);
+              } else if (entry.isFile()) {
+                if (hasMovieExt(entry.name)) found.push(dir + entry.name);
+                else if (opts.others && opts.others.length < 400000) opts.others.push(dir + entry.name);
               }
             }
           })
@@ -285,7 +342,8 @@ let lastFullScanAt = null;
 
 const scanState = {
   quick: { running: false, pending: false },
-  full: { running: false, pending: false }
+  full: { running: false, pending: false },
+  deep: { running: false, pending: false }
 };
 
 async function doQuickScan(shouldContinue) {
@@ -385,6 +443,90 @@ async function doFullScan(shouldContinue) {
   return totalLocked;
 }
 
+// Content sweep of the user folders: finds videos hiding behind another extension.
+async function sniffCandidates(files, shouldContinue) {
+  const hits = [];
+  await mapPool(files, 8, async (f) => {
+    if (!shouldContinue() || lockedFiles.has(f)) return;
+    let st;
+    try {
+      st = await fs.promises.stat(f);
+    } catch (e) {
+      return;
+    }
+    if (!st.isFile() || st.size < config.SNIFF_MIN_FILE_BYTES || seenNotVideo(f, st)) return;
+    if (await sniffIsVideo(f)) hits.push(f);
+    else rememberNotVideo(f, st);
+  });
+  return hits;
+}
+
+async function doDeepSweep(shouldContinue) {
+  const started = Date.now();
+  let checked = 0;
+  const all = [];
+  for (const root of await getQuickRoots()) {
+    if (!shouldContinue()) break;
+    const others = [];
+    await findVideoFiles(root, { skipDirNames: config.DEEP_SWEEP_SKIP_DIRS, others });
+    checked += others.length;
+    all.push(...(await sniffCandidates(others, shouldContinue)));
+  }
+  const r = await lockFiles(all, shouldContinue, 'deep', null);
+  if (r.locked > 0 || r.failed > 0) {
+    logger.log(
+      `Content sweep: ${checked} other file(s) checked, ${all.length} disguised video(s) found, newly locked ${r.locked}, failed ${r.failed} (${((Date.now() - started) / 1000).toFixed(1)}s).`
+    );
+  }
+  return r.locked;
+}
+
+// --- Single-file entry points (used by the real-time watcher) ----------------
+
+let saveTimer = null;
+function scheduleSave() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveLockedSet(lockedFiles);
+  }, 2000);
+}
+
+// Locks one file if it is a video (by extension or by content).
+// Returns 'locked' | 'already' | 'failed' | 'skip' | 'gone'.
+async function lockIfVideo(filePath) {
+  if (lockedFiles.has(filePath) || isExcluded(filePath)) return 'already';
+  let isVideo = hasMovieExt(filePath);
+  if (!isVideo) {
+    let st;
+    try {
+      st = await fs.promises.stat(filePath);
+    } catch (e) {
+      return 'gone';
+    }
+    if (!st.isFile() || st.size < config.SNIFF_MIN_FILE_BYTES || seenNotVideo(filePath, st)) return 'skip';
+    isVideo = await sniffIsVideo(filePath);
+    if (!isVideo) {
+      rememberNotVideo(filePath, st);
+      return 'skip';
+    }
+  }
+  const r = await lockFile(filePath, (f, reason) => logger.log(`[watch] Could not lock: ${f} -> ${reason}`));
+  if (r === 'locked') {
+    logger.log(`[watch] Locked immediately: ${filePath}`);
+    scheduleSave();
+  }
+  return r;
+}
+
+// A drive that just appeared (USB stick plugged in): lock what is on it right away.
+async function lockDrive(drive, shouldContinue = () => true) {
+  const files = await findVideoFiles(drive);
+  const r = await lockFiles(files, shouldContinue, 'drive', null);
+  logger.log(`New drive ${drive}: found ${files.length} video file(s), newly locked ${r.locked}, failed ${r.failed}.`);
+  return r.locked;
+}
+
 // Guarded runner: never two scans of the same kind at once (a slow full
 // scan used to be re-launched by the timer on top of itself). A periodic
 // call that finds a scan already running is simply skipped; an explicit
@@ -414,6 +556,11 @@ async function runScan(kind, fn, shouldContinue, opts = {}) {
 // Fast: user-profile folders only. Run at startup, and every ~30s.
 function lockPriority(shouldContinue = () => true, opts = {}) {
   return runScan('quick', doQuickScan, shouldContinue, opts);
+}
+
+// Content-based sweep of the user folders (videos renamed to another extension).
+function lockDisguised(shouldContinue = () => true, opts = {}) {
+  return runScan('deep', doDeepSweep, shouldContinue, opts);
 }
 
 // Slow but complete: every fixed/removable drive.
@@ -544,6 +691,7 @@ async function lockEverythingVerified() {
   progress.phase = 'quick';
   await lockPriority(keepGoing, { force: true });
   await lockAll(keepGoing, { force: true });
+  await lockDisguised(keepGoing, { force: true });
 
   // Retry ONLY the files that failed (no re-scan), up to 2 more times.
   let toRetry = [...failedFiles];
@@ -614,6 +762,13 @@ function getLastFullScan() {
 module.exports = {
   lockAll,
   lockPriority,
+  lockDisguised,
+  lockIfVideo,
+  lockDrive,
+  getScannableDrives,
+  isVideoHeader,
+  sniffIsVideo,
+  isExcluded,
   lockEverythingVerified,
   unlockAll,
   unlockAllByScan,

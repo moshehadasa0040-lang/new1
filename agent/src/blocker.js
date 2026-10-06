@@ -27,17 +27,26 @@ function isBlocking() {
 }
 
 // Kills any running process whose name matches the block list.
-// Uses the built-in `taskkill` - no external dependencies needed.
+// ONE `tasklist` call per tick (instead of one taskkill process per blocked name),
+// so the check can run every second without hurting the machine. `taskkill` is
+// only started for names that are actually running.
+let scanning = false;
 function scanAndKill() {
-  if (!blocking || !currentBlockList.length) return;
-  currentBlockList.forEach((processName) => {
-    exec(`taskkill /IM "${processName}" /F`, (error) => {
-      // No error means taskkill actually found and killed a matching
-      // process - that's the only case worth logging. "Not found" errors
-      // are the normal, expected outcome most of the time.
-      if (!error) {
-        logger.log(`Blocked and closed: ${processName}`);
-      }
+  if (!blocking || !currentBlockList.length || scanning) return;
+  scanning = true;
+  exec('tasklist /FO CSV /NH', { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (listErr, stdout) => {
+    scanning = false;
+    if (listErr || !blocking) return;
+    const running = new Set();
+    for (const line of String(stdout).split(/\r?\n/)) {
+      const m = /^"([^"]+)"/.exec(line);
+      if (m) running.add(m[1].toLowerCase());
+    }
+    currentBlockList.forEach((processName) => {
+      if (!running.has(processName.toLowerCase())) return;
+      exec(`taskkill /IM "${processName}" /F`, { windowsHide: true }, (error) => {
+        if (!error) logger.log(`Blocked and closed: ${processName}`);
+      });
     });
   });
 }

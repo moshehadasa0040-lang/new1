@@ -13,7 +13,7 @@
 ; pkg-built agent exe at agent\dist\content-blocker-agent.exe
 
 #define MyAppName "Content Blocker Agent"
-#define MyAppVersion "1.12.0"
+#define MyAppVersion "1.12.1"
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
 #define MyServiceName "ContentBlockerAgent"

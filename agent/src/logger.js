@@ -31,11 +31,24 @@ function getRecent(maxLines = 300) {
     if (!fs.existsSync(LOG_FILE)) return '(no log file yet)';
     let content = fs.readFileSync(LOG_FILE, 'utf8');
     let lines = content.split('\n').filter(Boolean);
-    if (lines.length < maxLines && fs.existsSync(LOG_FILE_OLD)) {
+    if (lines.length < maxLines * 3 && fs.existsSync(LOG_FILE_OLD)) {
       const older = fs.readFileSync(LOG_FILE_OLD, 'utf8').split('\n').filter(Boolean);
       lines = older.concat(lines);
     }
-    return lines.slice(-maxLines).join('\n');
+    // Keep the upload small: drop the very noisy per-file lines (they can be
+    // thousands after a fresh install), summarise how many were dropped,
+    // cut long lines, and cap the total size.
+    const noise = /Could not lock:|owner not changed|\[lock\] /;
+    let dropped = 0;
+    const kept = [];
+    for (const l of lines) {
+      if (noise.test(l)) { dropped++; continue; }
+      kept.push(l.length > 300 ? l.slice(0, 300) + '...' : l);
+    }
+    let out = kept.slice(-maxLines).join('\n');
+    if (out.length > 150000) out = out.slice(-150000);
+    if (dropped) out = `(${dropped} per-file lock lines omitted)\n` + out;
+    return out;
   } catch (e) {
     return `(failed to read log file: ${e.message})`;
   }

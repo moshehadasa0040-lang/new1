@@ -90,8 +90,14 @@ function hasMovieExt(fileName) {
   return config.MOVIE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+// Windows / program folders on ANY drive (a second drive can hold another Windows
+// copy, WinSxS, WindowsApps...). Those files are protected by the OS and locking
+// them is both impossible and harmful, so they are skipped instead of "failing".
+const SYSTEM_PATH_RE = /^[a-z]:\\(windows|program files|program files \(x86\))\\|\\windowsapps\\|\\winsxs\\/;
+
 function isExcluded(filePath) {
   const lower = filePath.toLowerCase();
+  if (SYSTEM_PATH_RE.test(lower)) return true;
   return config.EXCLUDED_PATH_PREFIXES.some((prefix) => lower.startsWith(prefix.toLowerCase()));
 }
 

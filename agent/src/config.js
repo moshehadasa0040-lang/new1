@@ -22,7 +22,7 @@ module.exports = {
   // OS permission level (ms). This is a heavier operation than the process
   // scan above (it walks the filesystem), so it runs far less often - it
   // exists mainly to catch newly copied/downloaded video files.
-  FILE_LOCK_SCAN_INTERVAL_MS: 3 * 60 * 1000,
+  FILE_LOCK_SCAN_INTERVAL_MS: 10 * 60 * 1000, // the 30s quick scan + real-time watcher catch new files
 
   // Where the agent stores its local state (device id/token, cache of rules).
   DATA_DIR: 'C:\\ProgramData\\ContentBlockerAgent',

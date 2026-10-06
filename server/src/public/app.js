@@ -93,6 +93,76 @@ async function loadDevices() {
     lastDevices = devices;
     renderDevices(devices);
   });
+  loadRemoved();
+}
+
+// Computers that removed the software (they disappear from the list above).
+// Shows what the agent itself reported about the removal, e.g. "all files released".
+async function loadRemoved() {
+  try {
+    const { removed } = await api('/api/admin/removed');
+    const sec = document.getElementById('removed-section');
+    const list = document.getElementById('removed-list');
+    if (!sec || !list) return;
+    sec.classList.toggle('hidden', !removed || !removed.length);
+    list.innerHTML = (removed || []).slice(0, 10).map((r) => {
+      const bad = /\(!\)|לא הושלם/.test(r.summary || '');
+      return `<div class="removed-item ${bad ? 'removed-bad' : ''}">
+        <strong>${escapeHtml(String(r.number || '?'))} · ${escapeHtml(r.name || r.hostname || '')}</strong>
+        <span>${new Date(r.removed_at).toLocaleString('he-IL')}</span>
+        <div>${escapeHtml(r.summary || 'לא דווח סיכום')}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    // the list is informational - ignore failures
+  }
+}
+
+// Instant status check: asks the computer for its health report + recent log
+// (it answers within the next ~20s heartbeat) and shows it in a window.
+function openModal(title, text) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal"><h3></h3><div class="modal-status"></div><pre class="modal-body" dir="auto"></pre>
+    <div class="modal-actions"><button class="copy-btn secondary">העתק</button><button class="close-btn">סגור</button></div></div>`;
+  overlay.querySelector('h3').textContent = title;
+  const body = overlay.querySelector('.modal-body');
+  const statusEl = overlay.querySelector('.modal-status');
+  body.textContent = text || '';
+  let open = true;
+  const close = () => { open = false; overlay.remove(); };
+  overlay.querySelector('.close-btn').addEventListener('click', close);
+  overlay.querySelector('.copy-btn').addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText(body.textContent));
+  document.body.appendChild(overlay);
+  return {
+    isOpen: () => open,
+    setStatus: (t) => { statusEl.textContent = t; },
+    setText: (t) => { statusEl.textContent = ''; body.textContent = t; }
+  };
+}
+
+async function checkStatus(id) {
+  const dev = lastDevices.find((x) => x.id === id);
+  const modal = openModal(`בדיקת מצב - ${dev ? dev.name : id}`, '');
+  modal.setStatus('מבקש בדיקה מהמחשב...');
+  try {
+    const before = await api(`/api/admin/devices/${id}/logs`).catch(() => ({}));
+    const prevAt = before && before.logs ? before.logs.updated_at : null;
+    await api(`/api/admin/devices/${id}/request-logs`, { method: 'POST' });
+    for (let i = 1; i <= 30; i += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (!modal.isOpen()) return;
+      const res = await api(`/api/admin/devices/${id}/logs`).catch(() => ({}));
+      if (res && res.logs && res.logs.updated_at && res.logs.updated_at !== prevAt) {
+        modal.setText(res.logs.content);
+        return;
+      }
+      modal.setStatus(`ממתין לתשובה מהמחשב... ${i * 3} שניות`);
+    }
+    modal.setText('המחשב לא ענה תוך 90 שניות. ייתכן שהוא כבוי, מנותק מהאינטרנט, או שהשירות לא רץ.');
+  } catch (e) {
+    modal.setText(`שגיאה: ${e.message}`);
+  }
 }
 
 // Typing in the search box filters by computer number, name or Windows name.
@@ -150,6 +220,7 @@ function renderDevices(allDevices) {
           <button class="rename-btn secondary">שנה שם</button>
           ${isUnlocked ? '<button class="lock-btn secondary">נעל מיד</button>' : ''}
           <button class="rules-btn secondary">ערוך רשימת חסימה</button>
+          <button class="status-btn">בדיקת מצב מיידית</button>
           <button class="events-btn secondary">אירועים והתראות</button>
           <button class="logs-btn secondary">בקש לוגים</button>
           <button class="download-logs-btn secondary">הורד לוגים</button>
@@ -198,6 +269,7 @@ function renderDevices(allDevices) {
       });
       alert('הרשימה תתעדכן בפעם הבאה שהמחשב יתחבר (עד דקה).');
     }));
+    card.querySelector('.status-btn')?.addEventListener('click', () => checkStatus(id));
     card.querySelector('.events-btn')?.addEventListener('click', () => runAction(async () => {
       const { events } = await api(`/api/admin/devices/${id}/events`);
       if (!events || !events.length) {

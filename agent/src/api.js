@@ -40,8 +40,8 @@ async function sendLogs(deviceId, deviceToken, logs) {
   await client(deviceId, deviceToken).post('/api/agent/logs', { logs });
 }
 
-async function unregister(deviceId, deviceToken) {
-  await client(deviceId, deviceToken).post('/api/agent/unregister');
+async function unregister(deviceId, deviceToken, summary) {
+  await client(deviceId, deviceToken).post('/api/agent/unregister', { summary: summary || '' });
 }
 
 module.exports = { register, heartbeat, ack, sendLogs, unregister };

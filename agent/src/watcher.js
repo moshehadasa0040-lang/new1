@@ -165,4 +165,8 @@ function stop() {
   watchers.clear();
 }
 
-module.exports = { start, stop };
+function status() {
+  return { running, drives: [...watchers.keys()] };
+}
+
+module.exports = { start, stop, status };

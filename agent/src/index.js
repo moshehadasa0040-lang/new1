@@ -13,6 +13,7 @@ const blocker = require('./blocker');
 const fileLock = require('./fileLock');
 const watcher = require('./watcher');
 const alerts = require('./alerts');
+const health = require('./health');
 const logger = require('./logger');
 const statusFile = require('./status');
 const { selfUninstall } = require('./uninstall');
@@ -41,6 +42,12 @@ async function ensureNssmExitPolicy() {
   }
 }
 
+// One line for the dashboard's "removed recently" list.
+function removalSummary(how, r) {
+  if (!r) return `${how}: שחרור הקבצים לא הושלם או לא דווח - כדאי לבדוק ידנית`;
+  return `${how}: שוחררו ${r.unlocked} קבצים, נותרו נעולים ${r.remaining}${r.remaining ? ' (!)' : ' - הכול שוחרר'}`;
+}
+
 // Support mode: the installer's uninstaller invokes the packaged exe with
 // this flag, BEFORE deleting any files, so that locally-locked video files
 // get their NTFS permissions restored even when someone uninstalls the
@@ -50,8 +57,9 @@ async function ensureNssmExitPolicy() {
 // which would be a real problem for someone's own legitimate files.
 if (process.argv.includes('--unlock-files')) {
   (async () => {
+    let unlockResult = null;
     try {
-      await fileLock.unlockAllByScan();
+      unlockResult = await fileLock.unlockAllByScan();
     } catch (e) {
       // best-effort - don't let a scan failure block the uninstall
     }
@@ -61,7 +69,7 @@ if (process.argv.includes('--unlock-files')) {
     try {
       const state = identity.loadState();
       if (state && state.deviceId && state.deviceToken) {
-        await api.unregister(state.deviceId, state.deviceToken);
+        await api.unregister(state.deviceId, state.deviceToken, removalSummary('הסרה דרך Windows', unlockResult));
       }
     } catch (e) {
       // Server unreachable, or already removed - not fatal, uninstall
@@ -229,7 +237,8 @@ async function applyCommand(cmd) {
       break;
     case 'send_logs':
       try {
-        const recentLogs = logger.getRecent(500);
+        const status = await health.collect().catch((e) => `בדיקת המצב נכשלה: ${e.message}`);
+        const recentLogs = `${status}\n\n=== לוג אחרון ===\n${logger.getRecent(500)}`;
         await api.sendLogs(deviceId, deviceToken, recentLogs);
       } catch (err) {
         logger.log(`Failed to upload logs: ${err.message}`);
@@ -255,8 +264,9 @@ async function applyCommand(cmd) {
       await new Promise((r) => setTimeout(r, 2000));
       // Full sweep, not just tracked files - same reasoning as the
       // --unlock-files path used by the normal Windows uninstaller.
+      let unlockResult = null;
       try {
-        await fileLock.unlockAllByScan();
+        unlockResult = await fileLock.unlockAllByScan();
       } catch (e) {
         logger.log(`Unlock sweep failed: ${e.message}`);
       }
@@ -272,7 +282,7 @@ async function applyCommand(cmd) {
       // process exits - otherwise it would just sit there forever showing
       // "offline" after the software is already gone.
       try {
-        await api.unregister(deviceId, deviceToken);
+        await api.unregister(deviceId, deviceToken, removalSummary('הסרה מהדשבורד', unlockResult));
       } catch (e) {
         // not fatal - proceed with the actual uninstall regardless
       }

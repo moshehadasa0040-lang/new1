@@ -163,6 +163,21 @@ async function listEvents(deviceId) {
   return raw.map((e) => JSON.parse(e));
 }
 
+// --- Removed devices ---------------------------------------------------------
+// When an agent removes itself it is deleted from the device list; this short
+// list keeps the last removals (with the agent's own verification summary) so
+// the owner can still see that the removal went through cleanly.
+
+async function addRemoval(entry) {
+  await redis.lpush('removed_devices', JSON.stringify(entry));
+  await redis.ltrim('removed_devices', 0, 29);
+}
+
+async function listRemovals() {
+  const raw = await redis.lrange('removed_devices', 0, 29);
+  return raw.map((e) => JSON.parse(e));
+}
+
 // --- Logs --------------------------------------------------------------------
 // The agent only uploads logs when asked (via a queued 'send_logs' command),
 // so we just keep the single most recent upload per device rather than a
@@ -193,5 +208,7 @@ module.exports = {
   addEvent,
   listEvents,
   saveLogs,
-  getLogs
+  getLogs,
+  addRemoval,
+  listRemovals
 };

@@ -135,3 +135,14 @@ button:hover { opacity: 0.9; }
   margin-top: 60px;
   font-size: 14px;
 }
+
+.section-title { margin: 28px 0 8px; font-size: 16px; }
+.removed-item { background: #fff; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; font-size: 14px; border-right: 4px solid #3b8f4c; }
+.removed-item span { color: #777; margin-right: 8px; font-size: 12px; }
+.removed-item.removed-bad { border-right-color: #c0392b; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal { background: #fff; border-radius: 12px; padding: 20px; width: min(760px, 100%); max-height: 90vh; display: flex; flex-direction: column; }
+.modal h3 { margin: 0 0 8px; }
+.modal-status { color: #666; font-size: 13px; min-height: 18px; }
+.modal-body { flex: 1; overflow: auto; background: #f7f6f2; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; margin: 8px 0 12px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-start; }

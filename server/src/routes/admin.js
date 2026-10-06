@@ -67,6 +67,10 @@ router.get('/devices', requireAdmin, async (req, res) => {
   res.json({ devices });
 });
 
+router.get('/removed', requireAdmin, async (req, res) => {
+  res.json({ removed: await store.listRemovals() });
+});
+
 router.get('/devices/:id/events', requireAdmin, async (req, res) => {
   const events = await store.listEvents(req.params.id);
   res.json({ events });

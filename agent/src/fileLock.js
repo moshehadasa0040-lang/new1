@@ -768,6 +768,24 @@ async function lockEverythingVerified() {
   return { locked: lockedFiles.size, failed };
 }
 
+// Spot check for the status report: do N random tracked files still carry our deny entry?
+async function verifySample(n = 10) {
+  const all = [...lockedFiles];
+  const picked = [];
+  while (picked.length < Math.min(n, all.length)) {
+    const f = all[Math.floor(Math.random() * all.length)];
+    if (!picked.includes(f)) picked.push(f);
+  }
+  const res = { checked: picked.length, locked: 0, unlocked: 0, gone: 0 };
+  for (const f of picked) {
+    const st = await fileState(f);
+    if (st === 'locked') res.locked += 1;
+    else if (st === 'unlocked') res.unlocked += 1;
+    else res.gone += 1;
+  }
+  return res;
+}
+
 function getLockedCount() {
   return lockedFiles.size;
 }
@@ -790,6 +808,7 @@ module.exports = {
   unlockAllByScan,
   getProgress,
   getLockedCount,
+  verifySample,
   getLastFullScan,
   findVideoFiles
 };

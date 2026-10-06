@@ -106,6 +106,18 @@ router.post('/logs', requireDevice, async (req, res) => {
 // entirely, instead of leaving a stale "offline" entry behind forever
 // that someone would otherwise have to notice and clean up by hand.
 router.post('/unregister', requireDevice, async (req, res) => {
+  try {
+    const d = req.device;
+    await store.addRemoval({
+      number: d.number || '',
+      name: d.name || '',
+      hostname: d.hostname || '',
+      summary: String((req.body && req.body.summary) || '').slice(0, 500),
+      removed_at: new Date().toISOString()
+    });
+  } catch (e) {
+    // history is a nice-to-have, never block the removal
+  }
   await store.deleteDevice(req.device.id);
   res.json({ ok: true });
 });

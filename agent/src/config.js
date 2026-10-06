@@ -13,7 +13,7 @@ module.exports = {
   SERVER_URL: process.env.CB_SERVER_URL || 'https://new1-q4bb.onrender.com',
 
   // How often the agent talks to the server (ms).
-  HEARTBEAT_INTERVAL_MS: 45 * 1000,
+  HEARTBEAT_INTERVAL_MS: 20 * 1000, // also how fast a dashboard command (status check, lock, unlock) reaches the PC
 
   // How often the agent scans and kills blocked processes (ms).
   BLOCK_SCAN_INTERVAL_MS: 1000,

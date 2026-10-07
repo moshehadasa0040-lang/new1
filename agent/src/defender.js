@@ -20,18 +20,27 @@ function run(args) {
 
 async function ensureExclusions() {
   const installDir = path.dirname(process.execPath);
-  const paths = [installDir, config.DATA_DIR];
-  for (const p of paths) {
+  const q = (s) => s.replace(/'/g, "''");
+  const cmds = [
+    `Add-MpPreference -ExclusionPath '${q(installDir)}'`,
+    `Add-MpPreference -ExclusionPath '${q(config.DATA_DIR)}'`,
+    // Process exclusion (not just path) covers the exe wherever it's
+    // currently running from, including the freshly-downloaded copy an
+    // in-progress silent update launches from UPDATE_DIR before it moves
+    // itself into installDir.
+    `Add-MpPreference -ExclusionProcess '${q(process.execPath)}'`
+  ];
+  for (const cmd of cmds) {
     try {
-      await run(`Add-MpPreference -ExclusionPath '${p.replace(/'/g, "''")}'`);
+      await run(cmd);
     } catch (e) {
       // Not fatal: Tamper Protection or a managed policy can block this; the
       // auto-update will simply keep retrying on its own schedule.
-      logger.log(`Defender exclusion for ${p} not set: ${e.message}`);
+      logger.log(`Defender exclusion step failed (${cmd}): ${e.message}`);
       return;
     }
   }
-  logger.log('Defender exclusions set for the agent folders (so silent auto-updates are not quarantined).');
+  logger.log('Defender exclusions set for the agent folders and process (so silent auto-updates are not quarantined).');
 }
 
 module.exports = { ensureExclusions };

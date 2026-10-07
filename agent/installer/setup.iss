@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.3"
+  #define MyAppVersion "1.13.4"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -193,6 +193,18 @@ begin
 end;
 
 [Run]
+; Ask Defender to exclude this app's folder and this exe BEFORE any of the
+; "suspicious-looking" setup actions below run (service registration, Safe
+; Mode keys, SRP). Behavior-based detections like Behavior:Win32/Execution.A!ml
+; are triggered by watching what a process does, so excluding it earlier in
+; the sequence - rather than only after install, as before - gives Defender
+; a chance to not flag this run at all instead of only protecting future
+; runs. This does not fix detections of the Setup .exe itself while it's
+; still sitting in Downloads before being run (only code signing fixes that,
+; see PROJECT_STATUS.md), and it is best-effort: ignored if Tamper Protection
+; or a managed policy blocks it.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-MpPreference -ExclusionPath '{app}'; Add-MpPreference -ExclusionPath '{commonappdata}\ContentBlockerAgent'; Add-MpPreference -ExclusionProcess '{app}\{#MyAppExeName}'"""; Flags: runhidden waituntilterminated
+
 ; Registers the packaged exe as a Windows service via NSSM. First removes
 ; any pre-existing service with the same name (ignoring errors if none
 ; exists) - installing on top of a leftover registration from a previous
@@ -234,10 +246,6 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 104
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" install-splash.ps1"; Flags: nowait runhidden skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."
 Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
-; Exclude the agents own folders from Defender so the silent auto-update
-; (agent\src\updater.js) is not quarantined mid-run with nobody watching.
-; Best-effort: ignored if Tamper Protection or policy blocks it.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-MpPreference -ExclusionPath '{app}'; Add-MpPreference -ExclusionPath '{commonappdata}\ContentBlockerAgent'"""; Flags: runhidden waituntilterminated
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; StatusMsg: "Applying program restrictions..."
 ; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser skipifsilent

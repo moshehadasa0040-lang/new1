@@ -28,6 +28,18 @@ $createdNew = $false
 $script:Mutex = New-Object System.Threading.Mutex($true, 'Local\ContentBlockerTray', [ref]$createdNew)
 if (-not $createdNew) { exit }
 
+# Loads an image WITHOUT keeping the file open. [Image]::FromFile locks the file for as
+# long as the image object lives, which made the installer fail on updates with
+# "DeleteFile failed; code 32" (logo-128.png in use). A copy in memory has no lock.
+function Load-ImageNoLock([string]$path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $ms = New-Object System.IO.MemoryStream(,$bytes)
+    try {
+        $img = [System.Drawing.Image]::FromStream($ms)
+        try { return (New-Object System.Drawing.Bitmap($img)) } finally { $img.Dispose() }
+    } finally { $ms.Dispose() }
+}
+
 function Load-Icon([string]$name) {
     $p = Join-Path $script:Assets $name
     return New-Object System.Drawing.Icon($p, [System.Windows.Forms.SystemInformation]::SmallIconSize)
@@ -320,7 +332,7 @@ function Show-About {
     $f.Controls.Add($hdr)
 
     $pic = New-Object System.Windows.Forms.PictureBox
-    $pic.Image = [System.Drawing.Image]::FromFile((Join-Path $script:Assets 'logo-128.png'))
+    $pic.Image = Load-ImageNoLock (Join-Path $script:Assets 'logo-128.png')
     $pic.SizeMode = 'Zoom'
     $pic.Size = New-Object System.Drawing.Size(96, 96)
     $pic.Location = New-Object System.Drawing.Point(182, 14)

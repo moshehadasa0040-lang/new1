@@ -49,6 +49,18 @@ $tips = @(
     'מומלץ לעדכן את Windows באופן קבוע, עדכונים סוגרים פרצות אבטחה'
 )
 
+# Loads an image WITHOUT keeping the file open. [Image]::FromFile locks the file for as
+# long as the image object lives, which made the installer fail on updates with
+# "DeleteFile failed; code 32" (logo-128.png in use). A copy in memory has no lock.
+function Load-ImageNoLock([string]$path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $ms = New-Object System.IO.MemoryStream(,$bytes)
+    try {
+        $img = [System.Drawing.Image]::FromStream($ms)
+        try { return (New-Object System.Drawing.Bitmap($img)) } finally { $img.Dispose() }
+    } finally { $ms.Dispose() }
+}
+
 $f = New-Object System.Windows.Forms.Form
 $f.Text = 'Content Blocker Agent'
 $f.Icon = New-Object System.Drawing.Icon((Join-Path $script:Assets 'icon.ico'))
@@ -66,7 +78,7 @@ $hdr.BackColor = [System.Drawing.Color]::FromArgb(24, 44, 140)
 $f.Controls.Add($hdr)
 
 $pic = New-Object System.Windows.Forms.PictureBox
-$pic.Image = [System.Drawing.Image]::FromFile((Join-Path $script:Assets 'logo-128.png'))
+$pic.Image = Load-ImageNoLock (Join-Path $script:Assets 'logo-128.png')
 $pic.SizeMode = 'Zoom'
 $pic.Size = New-Object System.Drawing.Size(76, 76)
 $pic.Location = New-Object System.Drawing.Point(222, 10)

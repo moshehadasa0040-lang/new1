@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.8"
+  #define MyAppVersion "1.13.9"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -127,6 +127,22 @@ begin
   DeviceNamePage.Values[0] := GetComputerNameString();
 end;
 
+// The tray icon (tray.ps1), the install progress window (install-splash.ps1) and the
+// wscript launchers that start them run in the user's session and keep files of
+// the install folder open (logo-128.png ...). Copying over them fails with
+// "DeleteFile failed; code 32" - in a silent auto-update that aborts the whole
+// update and the computer stays on its old version. Close them first; the tray
+// is started again by the last [Run] entry (or at the next logon after a silent update).
+procedure StopTrayProcesses;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { ($_.Name -eq ''powershell.exe'' -or $_.Name -eq ''wscript.exe'') -and $_.ProcessId -ne $PID -and $_.CommandLine -match ''tray\.ps1|install-splash\.ps1|ps-hidden\.vbs'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  AppendLog('Closed the tray icon / progress window processes (exit ' + IntToStr(ResultCode) + ').');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   DeviceName: String;
@@ -142,6 +158,7 @@ begin
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
     Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ContentBlockerWatchdog /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    StopTrayProcesses;
     OldNssm := ExpandConstant('{app}\nssm.exe');
     if FileExists(OldNssm) then
       Exec(OldNssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -187,7 +204,10 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
+  begin
     AppendLog('Uninstall started: service will be stopped, files unlocked, service removed.');
+    StopTrayProcesses;
+  end;
   if CurUninstallStep = usPostUninstall then
     AppendLog('Uninstall finished. Logs folder intentionally kept.');
 end;

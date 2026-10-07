@@ -282,4 +282,23 @@ function start(opts) {
   }, config.UPDATE_FIRST_CHECK_DELAY_MS);
 }
 
-module.exports = { start, checkOnce, isNewer, parseVersion };
+// Hebrew one-liner for the dashboard's event list ("update the agent" button).
+function describeResult(r) {
+  const why = {
+    ratelimit: 'GitHub הגביל זמנית את מספר הבדיקות מהרשת (נסו שוב בעוד כמה דקות)',
+    notfound: 'לא נמצאה גרסה מפורסמת במאגר',
+    network: 'אין חיבור ל-GitHub מהמחשב',
+    other: r.message || 'שגיאה לא ידועה'
+  };
+  switch (r.result) {
+    case 'uptodate': return `עדכון הסוכן: אין עדכון חדש, גרסה ${r.current} היא העדכנית ביותר`;
+    case 'updating': return `עדכון הסוכן: מעדכן מגרסה ${r.current} לגרסה ${r.latest} (ההגנה תופסק לכמה שניות)`;
+    case 'disabled': return 'עדכון הסוכן: העדכון האוטומטי כבוי במחשב הזה (קיים הקובץ no-auto-update.txt)';
+    case 'busy': return 'עדכון הסוכן: המחשב עסוק כרגע (עדכון או הסרה מתבצעים), נסו שוב בעוד רגע';
+    case 'incomplete': return `עדכון הסוכן: גרסה ${r.latest} פורסמה אבל קובץ ההתקנה שלה עדיין לא מלא ב-GitHub`;
+    case 'skipped': return `עדכון הסוכן: דולג (גרסה ${r.latest})`;
+    default: return `עדכון הסוכן נכשל: ${why[r.reason] || why.other}`;
+  }
+}
+
+module.exports = { start, checkOnce, isNewer, parseVersion, describeResult };

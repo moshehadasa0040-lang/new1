@@ -247,6 +247,29 @@ async function applyCommand(cmd) {
         logger.log(`Failed to upload logs: ${err.message}`);
       }
       break;
+    case 'update': {
+      // "Update agent" button in the dashboard. Runs in the background: a download can
+      // take minutes and the heartbeat must keep going meanwhile (otherwise the
+      // computer would show as offline). delaySec spreads out "update all" requests so
+      // 30 computers do not hit GitHub's anonymous rate limit at the same second.
+      const delayMs = Math.max(0, Math.min(Number(cmd.payload && cmd.payload.delaySec) || 0, 3600)) * 1000;
+      const say = (m) => api.ack(deviceId, deviceToken, cmd.id, m).catch((e) => logger.log(`Ack failed: ${e.message}`));
+      setTimeout(async () => {
+        try {
+          const r = await updater.checkOnce({
+            isBusy: () => uninstalling,
+            manual: true,
+            // Reported BEFORE the installer stops this service - afterwards it cannot.
+            onProgress: (stage, info) => { if (stage === 'updating') say(updater.describeResult({ result: 'updating', ...info })); }
+          });
+          logger.log(`Update requested from the dashboard: ${r.result}${r.message ? ' - ' + r.message : ''}`);
+          if (r.result !== 'updating') await say(updater.describeResult(r));
+        } catch (e) {
+          logger.log(`Update from the dashboard crashed: ${e.message}`);
+        }
+      }, delayMs);
+      break;
+    }
     case 'uninstall':
       logger.log('Uninstall command received - unlocking files (full scan), then stopping and removing service.');
       // Stop EVERYTHING that could re-lock files before the sweep starts.

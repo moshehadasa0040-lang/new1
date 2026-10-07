@@ -166,3 +166,5 @@ button:hover { opacity: 0.9; }
 .ver-ok { background: #e1f5e4; color: #1d6b2c; }
 .ver-old { background: #fdebd0; color: #8a4b00; }
 .ver-unknown { background: #e6e4dc; color: #5f5e5a; }
+
+button:disabled { opacity: 0.45; cursor: not-allowed; }

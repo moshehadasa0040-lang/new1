@@ -5,6 +5,7 @@ const searchInput = document.getElementById('search-input');
 const deviceCount = document.getElementById('device-count');
 let lastDevices = [];
 let latestVersion = '';
+let remoteUpdateMin = '1.13.12'; // first agent version that understands the update command
 
 // "1.13.10" > "1.13.9": compare numerically, part by part.
 function cmpVersion(a, b) {
@@ -31,6 +32,7 @@ async function loadLatest() {
   try {
     const r = await api('/api/admin/latest-release');
     latestVersion = r.version || '';
+    if (r.remote_update_min) remoteUpdateMin = r.remote_update_min;
     const btn = document.getElementById('download-btn');
     if (btn && latestVersion) btn.textContent = `הורד את התוכנה (גרסה ${latestVersion})`;
   } catch (e) {
@@ -113,6 +115,12 @@ document.getElementById('login-btn').addEventListener('click', async () => {
     errorEl.textContent = 'סיסמה שגויה';
   }
 });
+
+document.getElementById('update-all-btn').addEventListener('click', () => runAction(async () => {
+  if (!confirm('לשלוח בקשת עדכון לכל המחשבים המחוברים שאינם עדכניים?\nהם יתעדכנו בהפרש של כמה שניות זה מזה, ובכל אחד ההגנה תופסק לכמה שניות.')) return;
+  const r = await api('/api/admin/devices/update-outdated', { method: 'POST' });
+  alert(`נשלחה בקשת עדכון ל-${r.queued} מחשבים (לגרסה ${r.latest}).`);
+}));
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
   await api('/api/admin/logout', { method: 'POST' });
@@ -257,6 +265,7 @@ function renderDevices(allDevices) {
           <button class="rename-btn secondary">שנה שם</button>
           ${isUnlocked ? '<button class="lock-btn secondary">נעל מיד</button>' : ''}
           <button class="rules-btn secondary">ערוך רשימת חסימה</button>
+          <button class="update-btn ${versionState(d) === 'old' ? '' : 'secondary'}" ${supportsRemoteUpdate(d) ? '' : 'disabled title="גרסה זו עדיין לא תומכת בעדכון מרחוק. היא תתעדכן לבד בבדיקה האוטומטית, או בהתקנה ידנית."'}>עדכן סוכן</button>
           <button class="status-btn">בדיקת מצב מיידית</button>
           <button class="events-btn secondary">אירועים והתראות</button>
           <button class="logs-btn secondary">בקש לוגים</button>
@@ -270,6 +279,13 @@ function renderDevices(allDevices) {
 
   deviceList.querySelectorAll('.device-card').forEach((card) => {
     const id = card.dataset.id;
+    card.querySelector('.update-btn')?.addEventListener('click', () => runAction(async () => {
+      const d = lastDevices.find((x) => x.id === id);
+      const offline = d && d.status !== 'online';
+      if (!confirm('לעדכן את הסוכן במחשב הזה לגרסה האחרונה?\nההגנה תופסק לכמה שניות בזמן ההתקנה.' + (offline ? '\n\nהמחשב מנותק כרגע, העדכון יתבצע כשיתחבר.' : ''))) return;
+      await api(`/api/admin/devices/${id}/update`, { method: 'POST' });
+      alert('בקשת העדכון נשלחה. המחשב יקבל אותה תוך כדקה. התוצאה תופיע ב"אירועים והתראות", והגרסה החדשה בכרטיס אחרי כמה דקות.');
+    }));
     card.querySelector('.rename-btn')?.addEventListener('click', () => runAction(async () => {
       const current = lastDevices.find((x) => x.id === id);
       const name = prompt('שם חדש למחשב (למשל: "סלון" או "החדר של דני"):', current ? current.name : '');
@@ -346,6 +362,10 @@ function renderDevices(allDevices) {
   });
 }
 
+function supportsRemoteUpdate(d) {
+  return !!(d.agent_version_at && d.agent_version && cmpVersion(d.agent_version, remoteUpdateMin) >= 0);
+}
+
 function versionBadge(d) {
   const st = versionState(d);
   if (st === 'unknown') return '<span class="ver-badge ver-unknown" title="המחשב עדיין לא דיווח גרסה. הוא ידווח אחרי העדכון האוטומטי הבא.">גרסה לא ידועה</span> · ';
@@ -365,6 +385,12 @@ function renderVersionSummary(devices) {
   if (count.old) parts.push(`<span class="ver-badge ver-old">${count.old} לא עדכניים</span>`);
   if (count.unknown) parts.push(`<span class="ver-badge ver-unknown">${count.unknown} טרם דיווחו גרסה</span>`);
   el.innerHTML = parts.join(' ');
+  const btn = document.getElementById('update-all-btn');
+  if (btn) {
+    const n = devices.filter((d) => d.status === 'online' && supportsRemoteUpdate(d) && versionState(d) === 'old').length;
+    btn.classList.toggle('hidden', n === 0);
+    btn.textContent = `עדכן את כל המחשבים הלא עדכניים (${n})`;
+  }
 }
 
 function escapeHtml(str) {

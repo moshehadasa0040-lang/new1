@@ -72,7 +72,7 @@ router.get('/devices', requireAdmin, async (req, res) => {
 router.get('/latest-release', requireAdmin, async (req, res) => {
   try {
     const { version, published_at, size } = await release.getLatest();
-    res.json({ version, published_at, size });
+    res.json({ version, published_at, size, remote_update_min: release.REMOTE_UPDATE_MIN });
   } catch (e) {
     res.status(502).json({ error: 'github_unreachable' });
   }
@@ -85,6 +85,40 @@ router.get('/installer', requireAdmin, async (req, res) => {
     if (!res.headersSent) res.status(502).json({ error: e.message || 'download_failed' });
     else res.destroy();
   }
+});
+
+// --- "Update agent" button -----------------------------------------------------
+// The agent picks the command up on its next heartbeat, checks GitHub, downloads +
+// verifies (SHA-256) + installs, and writes the outcome to the device's event list.
+function canRemoteUpdate(d) {
+  return !!(d.agent_version_at && d.agent_version && release.cmpVersion(d.agent_version, release.REMOTE_UPDATE_MIN) >= 0);
+}
+
+// All online computers that are behind the latest release. Spaced 15s apart so they
+// do not hit GitHub's anonymous API limit (60/hour per IP) at the same moment.
+router.post('/devices/update-outdated', requireAdmin, async (req, res) => {
+  let latest;
+  try { latest = (await release.getLatest()).version; } catch (e) { return res.status(502).json({ error: 'github_unreachable' }); }
+  const now = Date.now();
+  const rows = await store.listDevices();
+  const targets = rows.filter((d) =>
+    canRemoteUpdate(d) &&
+    release.cmpVersion(d.agent_version, latest) < 0 &&
+    d.last_seen && (now - new Date(d.last_seen).getTime()) / 1000 <= OFFLINE_AFTER_SECONDS
+  );
+  let i = 0;
+  for (const d of targets) {
+    await store.queueCommand(d.id, 'update', { delaySec: i * 15 });
+    await store.addEvent(d.id, `התבקש עדכון הסוכן לגרסה ${latest} (עדכון קבוצתי)`);
+    i += 1;
+  }
+  res.json({ ok: true, queued: targets.length, latest });
+});
+
+router.post('/devices/:id/update', requireAdmin, async (req, res) => {
+  await store.queueCommand(req.params.id, 'update', { delaySec: 0 });
+  await store.addEvent(req.params.id, 'התבקש עדכון הסוכן מהדשבורד');
+  res.json({ ok: true });
 });
 
 router.get('/removed', requireAdmin, async (req, res) => {

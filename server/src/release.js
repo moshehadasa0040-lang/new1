@@ -55,4 +55,19 @@ async function streamInstaller(res) {
   Readable.fromWeb(r.body).pipe(res);
 }
 
-module.exports = { getLatest, streamInstaller };
+// "1.13.10" > "1.13.9": numeric, part by part.
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// First agent version that understands the 'update' command. Older agents silently
+// ignore unknown commands, so the dashboard must not offer the button for them.
+const REMOTE_UPDATE_MIN = '1.13.12';
+
+module.exports = { getLatest, streamInstaller, cmpVersion, REMOTE_UPDATE_MIN };

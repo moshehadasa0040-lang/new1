@@ -26,5 +26,7 @@ function writeKv(fileName, values) {
 
 const writeStatus = (values) => writeKv('status.txt', values);
 const writeInstallProgress = (values) => writeKv('install-progress.txt', values);
+// Answer to a "check for update now" request made from the tray icon.
+const writeUpdateResult = (values) => writeKv('update-result.txt', values);
 
-module.exports = { writeStatus, writeInstallProgress };
+module.exports = { writeStatus, writeInstallProgress, writeUpdateResult };

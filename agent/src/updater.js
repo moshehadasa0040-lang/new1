@@ -9,6 +9,11 @@
 // runs it, so it survives the service being stopped.
 //
 // Kill switch: create a file named no-auto-update.txt next to the agent exe.
+//
+// Manual check: the tray icon (runs in the user's session, cannot talk to this
+// SYSTEM service directly) drops update-request.txt into the logs folder. The
+// service polls for it, runs one check right away (ignoring the 6h retry
+// back-off) and answers in update-result.txt, which the tray shows as a balloon.
 
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +22,7 @@ const { execFile } = require('child_process');
 const axios = require('axios');
 const config = require('./config');
 const logger = require('./logger');
+const statusFile = require('./status');
 
 const ASSET = 'ContentBlockerAgent-Setup.exe';
 const TASK_NAME = 'ContentBlockerUpdate';
@@ -95,14 +101,31 @@ function sha256File(file) {
   });
 }
 
-async function checkOnce({ isBusy, notify } = {}) {
-  if (busy) return;
-  busy = true;
-  try {
-    if (isBusy && isBusy()) return;
-    if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return;
+const REQUEST_FILE = path.join(config.LOG_DIR, 'update-request.txt');
+const REQUEST_POLL_MS = 3000;
+const MANUAL_MIN_GAP_MS = 10 * 1000; // GitHub's anonymous API limit is per IP, don't let a click-happy user burn it
 
-    const current = require('../package.json').version;
+// Short machine-readable reason for a failure; the tray turns it into Hebrew text.
+function failureReason(e) {
+  const status = e && e.response && e.response.status;
+  if (status === 403 || status === 429) return 'ratelimit';
+  if (status === 404) return 'notfound';
+  const code = e && e.code;
+  if (['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN', 'ENETUNREACH'].includes(code)) return 'network';
+  return 'other';
+}
+
+// Returns { result, current, latest?, reason?, message? } where result is one of:
+// uptodate | updating | disabled | busy | incomplete | skipped | failed
+// `manual` = asked for by a person: ignores the "already tried this version recently" back-off.
+async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
+  if (busy) return { result: 'busy', current: require('../package.json').version };
+  busy = true;
+  const current = require('../package.json').version;
+  try {
+    if (isBusy && isBusy()) return { result: 'busy', current };
+    if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return { result: 'disabled', current };
+
     // Every GitHub call below uses only api.github.com, never github.com -
     // see the note in download() for why.
     const apiBase = `https://api.github.com/repos/${config.UPDATE_REPO}/releases/assets/`;
@@ -111,24 +134,27 @@ async function checkOnce({ isBusy, notify } = {}) {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'content-blocker-agent' }
     });
     const latest = String(rel.data.tag_name || '').replace(/^v/, '');
-    if (!isNewer(latest, current)) return;
+    if (!isNewer(latest, current)) return { result: 'uptodate', current, latest };
 
     const exeAsset = (rel.data.assets || []).find((a) => a.name === ASSET);
     const shaAsset = (rel.data.assets || []).find((a) => a.name === `${ASSET}.sha256`);
     if (!exeAsset || !shaAsset) {
       logger.log(`Update ${latest} found but the release is missing the installer or its .sha256 - skipping.`);
-      return;
+      return { result: 'incomplete', current, latest };
     }
     // Only ever download assets that belong to this exact repo's releases.
     if (!String(exeAsset.url).startsWith(apiBase) || !String(shaAsset.url).startsWith(apiBase)) {
       logger.log('Update skipped: asset URL is not from the configured repository.');
-      return;
+      return { result: 'failed', current, latest, reason: 'other', message: 'asset URL is not from the configured repository' };
     }
 
     const state = readState();
-    if (state.version === latest && Date.now() - (state.attemptedAt || 0) < RETRY_AFTER_MS) return;
+    if (!manual && state.version === latest && Date.now() - (state.attemptedAt || 0) < RETRY_AFTER_MS) {
+      return { result: 'skipped', current, latest };
+    }
 
     logger.log(`Update available: ${current} -> ${latest}. Downloading...`);
+    if (onProgress) { try { onProgress('downloading', { current, latest }); } catch (e) { /* ignore */ } }
     writeState({ version: latest, attemptedAt: Date.now() });
     fs.mkdirSync(UPDATE_DIR, { recursive: true });
 
@@ -161,19 +187,73 @@ async function checkOnce({ isBusy, notify } = {}) {
     ].join('\r\n'));
 
     logger.log(`Update ${latest} verified (SHA-256 ok). Handing over to the installer - the service will restart.`);
+    // Tell the tray BEFORE the installer stops this service (it won't be able to afterwards).
+    if (onProgress) { try { onProgress('updating', { current, latest }); } catch (e) { /* ignore */ } }
     if (notify) { try { notify(`מעדכן את הסוכן מגרסה ${current} לגרסה ${latest}`); } catch (e) { /* ignore */ } }
 
     await run('schtasks.exe', ['/delete', '/tn', TASK_NAME, '/f']).catch(() => {});
     await run('schtasks.exe', ['/create', '/tn', TASK_NAME, '/sc', 'once', '/st', '23:59', '/ru', 'SYSTEM', '/rl', 'HIGHEST', '/f', '/tr', bat]);
     await run('schtasks.exe', ['/run', '/tn', TASK_NAME]);
+    return { result: 'updating', current, latest };
   } catch (e) {
     logger.log(`Auto-update failed: ${e.message}`);
+    return { result: 'failed', current, reason: failureReason(e), message: e.message };
   } finally {
     busy = false;
   }
 }
 
+function writeResult(result, extra = {}) {
+  statusFile.writeUpdateResult({
+    result,
+    current: require('../package.json').version,
+    ...extra,
+    at: new Date().toISOString()
+  });
+}
+
+// Answers "check for update now" requests dropped by the tray icon.
+function watchRequests(opts) {
+  let handling = false;
+  let lastRunAt = 0;
+  let lastMtime = 0;
+  setInterval(async () => {
+    if (handling) return;
+    let mtime;
+    try { mtime = fs.statSync(REQUEST_FILE).mtimeMs; } catch (e) { return; } // no request
+    // If the file could not be deleted, don't answer the same request over and over.
+    if (mtime === lastMtime) { try { fs.rmSync(REQUEST_FILE, { force: true }); } catch (e) { /* ignore */ } return; }
+    lastMtime = mtime;
+    handling = true;
+    try {
+      try { fs.rmSync(REQUEST_FILE, { force: true }); } catch (e) { /* ignore */ }
+      if (Date.now() - lastRunAt < MANUAL_MIN_GAP_MS) {
+        writeResult('busy', { reason: 'toofast' });
+        return;
+      }
+      lastRunAt = Date.now();
+      logger.log('Manual update check requested from the tray icon.');
+      writeResult('checking');
+      const r = await checkOnce({
+        ...opts,
+        manual: true,
+        onProgress: (stage, info) => writeResult(stage, { latest: info.latest })
+      });
+      if (r.result === 'uptodate') logger.log(`Manual update check: already up to date (running ${r.current}, latest release ${r.latest}).`);
+      else if (r.result !== 'updating') logger.log(`Manual update check finished: ${r.result}${r.message ? ' - ' + r.message : ''}`);
+      // 'updating' was already announced by onProgress, right before the installer takes the service down.
+      if (r.result !== 'updating') writeResult(r.result, { latest: r.latest || '', reason: r.reason || '', message: r.message || '' });
+    } catch (e) {
+      logger.log(`Manual update check crashed: ${e.message}`);
+      writeResult('failed', { reason: 'other', message: e.message });
+    } finally {
+      handling = false;
+    }
+  }, REQUEST_POLL_MS);
+}
+
 function start(opts) {
+  watchRequests(opts);
   setTimeout(() => {
     checkOnce(opts);
     setInterval(() => checkOnce(opts), config.UPDATE_CHECK_INTERVAL_MS);

@@ -4,6 +4,10 @@
 # which the Windows service writes. There is deliberately no "Exit", "Disable"
 # or "Uninstall" item: the protection itself is the service, so closing or
 # killing this icon never unblocks anything.
+# The one thing it can ask the service to do is "check for an update now": it
+# drops update-request.txt in the logs folder and shows the answer the service
+# writes to update-result.txt (the service itself runs as SYSTEM and does the
+# real download + SHA-256 check + install, see agent/src/updater.js).
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -15,6 +19,8 @@ $script:AppDir    = Split-Path -Parent $PSCommandPath
 $script:Assets    = Join-Path $script:AppDir 'assets'
 $script:LogDir    = 'C:\Users\Public\Documents\ContentBlockerLogs'
 $script:StatusPath = Join-Path $script:LogDir 'status.txt'
+$script:RequestPath = Join-Path $script:LogDir 'update-request.txt'
+$script:ResultPath  = Join-Path $script:LogDir 'update-result.txt'
 $script:AppName   = 'Content Blocker Agent'
 
 # One tray icon per user session.
@@ -36,6 +42,17 @@ function Read-Status {
     try {
         $lines = Get-Content -LiteralPath $script:StatusPath -Encoding UTF8 -ErrorAction Stop
         foreach ($line in $lines) {
+            $i = $line.IndexOf('=')
+            if ($i -gt 0) { $h[$line.Substring(0, $i)] = $line.Substring($i + 1) }
+        }
+    } catch { }
+    return $h
+}
+
+function Read-KvFile([string]$path) {
+    $h = @{}
+    try {
+        foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop)) {
             $i = $line.IndexOf('=')
             if ($i -gt 0) { $h[$line.Substring(0, $i)] = $line.Substring($i + 1) }
         }
@@ -119,11 +136,13 @@ $miDash  = New-Object System.Windows.Forms.ToolStripMenuItem('פתח את הדש
 $miLogs  = New-Object System.Windows.Forms.ToolStripMenuItem('פתח את תיקיית היומנים (לוגים)')
 $miCopy  = New-Object System.Windows.Forms.ToolStripMenuItem('העתק פרטי מחשב (לשליחה בהודעה)')
 $miRefresh = New-Object System.Windows.Forms.ToolStripMenuItem('רענן סטטוס')
+$script:MiUpdate = New-Object System.Windows.Forms.ToolStripMenuItem('בדוק עדכון עכשיו')
 [void]$menu.Items.Add($miAbout)
 [void]$menu.Items.Add($miDash)
 [void]$menu.Items.Add($miLogs)
 [void]$menu.Items.Add($miCopy)
 [void]$menu.Items.Add($miRefresh)
+[void]$menu.Items.Add($script:MiUpdate)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $script:MiVersion = New-Object System.Windows.Forms.ToolStripMenuItem($script:AppName)
 $script:MiVersion.Enabled = $false
@@ -163,6 +182,11 @@ function Update-Ui([bool]$quiet) {
     Announce-NumberOnce $st.Data
     $ver = $st.Data['version']
     if ($ver) { $script:MiVersion.Text = $script:AppName + '  v' + $ver }
+    # After an auto-update the installer replaces tray.ps1 but cannot restart the
+    # icon in the user's session. This running copy is the old script, so when the
+    # service reports a different version it starts a fresh copy of itself.
+    if ($ver -and -not $script:StartVersion) { $script:StartVersion = $ver }
+    elseif ($ver -and $script:StartVersion -and $ver -ne $script:StartVersion) { Restart-Tray }
 
     if ((-not $quiet) -and $null -ne $script:LastKind -and $script:LastKind -ne $st.Kind) {
         switch ($st.Kind) {
@@ -173,6 +197,103 @@ function Update-Ui([bool]$quiet) {
     }
     $script:LastKind = $st.Kind
     return $st
+}
+
+# ---------- restart after update ----------
+function Restart-Tray {
+    try {
+        $vbs = Join-Path $script:AppDir 'ps-hidden.vbs'
+        if (-not (Test-Path -LiteralPath $vbs)) { return }
+        $script:Notify.Visible = $false
+        try { $script:Mutex.ReleaseMutex() } catch { }   # let the new copy take the single-instance mutex
+        Start-Process -FilePath (Join-Path $env:WINDIR 'System32\wscript.exe') -ArgumentList ('"' + $vbs + '" tray.ps1') -WorkingDirectory $script:AppDir
+        $script:Ctx.ExitThread()
+    } catch { }
+}
+
+# ---------- "check for update now" ----------
+$script:UpdateSince = $null      # UTC time of the pending request, $null when none is pending
+$script:UpdateStage = ''
+$script:UpdateDeadline = $null
+
+function Finish-UpdateCheck {
+    $script:UpdateSince = $null
+    $script:UpdateStage = ''
+    $script:UpdateTimer.Stop()
+    $script:MiUpdate.Enabled = $true
+    $script:MiUpdate.Text = 'בדוק עדכון עכשיו'
+}
+
+function Start-UpdateCheck {
+    if ($null -ne $script:UpdateSince) { Show-Balloon $script:AppName 'בדיקת עדכון כבר רצה, רגע בבקשה...' 'Info'; return }
+    $st = Get-State
+    if ($st.Kind -eq 'down') {
+        Show-Balloon $script:AppName 'שירות ההגנה אינו פעיל, ולכן אי אפשר לבדוק עדכון כרגע.' 'Warning'
+        return
+    }
+    $now = (Get-Date).ToUniversalTime()
+    try {
+        Set-Content -LiteralPath $script:RequestPath -Value $now.ToString('o') -Encoding ASCII -ErrorAction Stop
+    } catch {
+        Show-Balloon $script:AppName 'לא הצלחתי לשלוח בקשה לשירות (אין הרשאה לכתוב בתיקיית היומנים).' 'Warning'
+        return
+    }
+    $script:UpdateSince = $now.AddSeconds(-3)
+    $script:UpdateStage = 'checking'
+    $script:UpdateDeadline = (Get-Date).AddSeconds(60)
+    $script:MiUpdate.Enabled = $false
+    $script:MiUpdate.Text = 'בודק עדכון...'
+    Show-Balloon $script:AppName 'בודק אם יש גרסה חדשה...' 'Info'
+    $script:UpdateTimer.Start()
+}
+
+function Poll-UpdateCheck {
+    if ($null -eq $script:UpdateSince) { $script:UpdateTimer.Stop(); return }
+    $r = Read-KvFile $script:ResultPath
+    $at = $null
+    if ($r.ContainsKey('at')) { $at = Parse-Utc $r['at'] }
+    if (($null -ne $at) -and ($at -ge $script:UpdateSince)) {
+        $res = $r['result']; $latest = $r['latest']; $cur = $r['current']
+        if ($res -eq 'checking') { return }
+        if ($res -eq 'downloading') {
+            if ($script:UpdateStage -ne 'downloading') {
+                $script:UpdateStage = 'downloading'
+                $script:UpdateDeadline = (Get-Date).AddMinutes(6)
+                Show-Balloon $script:AppName ('נמצאה גרסה חדשה ' + $latest + '. מוריד ומאמת...') 'Info'
+            }
+            return
+        }
+        if ($res -eq 'updating') {
+            Show-Balloon $script:AppName ('הגרסה ' + $latest + ' אומתה ומותקנת עכשיו. ההגנה תמשיך לפעול, והשירות יופעל מחדש בעוד רגע.') 'Info'
+        } elseif ($res -eq 'uptodate') {
+            Show-Balloon $script:AppName ('אין עדכון חדש. הגרסה המותקנת (' + $cur + ') היא העדכנית ביותר.') 'Info'
+        } elseif ($res -eq 'disabled') {
+            Show-Balloon $script:AppName 'העדכון האוטומטי כבוי במחשב הזה.' 'Warning'
+        } elseif ($res -eq 'incomplete') {
+            Show-Balloon $script:AppName ('יש גרסה חדשה (' + $latest + ') אבל הפרסום שלה ב-GitHub עדיין לא הושלם. נסו שוב בעוד כמה דקות.') 'Warning'
+        } elseif ($res -eq 'busy') {
+            if ($r['reason'] -eq 'toofast') { Show-Balloon $script:AppName 'בדיקה כבר בוצעה הרגע, נסו שוב בעוד כמה שניות.' 'Info' }
+            else { Show-Balloon $script:AppName 'השירות עסוק כרגע (עדכון או הסרה מתבצעים), נסו שוב בעוד רגע.' 'Warning' }
+        } else {
+            $why = switch ($r['reason']) {
+                'ratelimit' { 'GitHub הגביל זמנית את מספר הבדיקות מהרשת הזו. נסו שוב בעוד כמה דקות.' }
+                'notfound'  { 'לא נמצאה גרסה מפורסמת במאגר (או שהמאגר פרטי).' }
+                'network'   { 'אין חיבור ל-GitHub מהמחשב הזה.' }
+                default     { 'שגיאה: ' + $r['message'] }
+            }
+            Show-Balloon $script:AppName ('בדיקת העדכון נכשלה. ' + $why) 'Warning'
+        }
+        Finish-UpdateCheck
+        return
+    }
+    if ((Get-Date) -gt $script:UpdateDeadline) {
+        if ($script:UpdateStage -eq 'downloading') {
+            Show-Balloon $script:AppName 'ההורדה מתעכבת. פרטים ב-agent.log (תפריט: פתח את תיקיית היומנים).' 'Warning'
+        } else {
+            Show-Balloon $script:AppName 'השירות לא ענה תוך דקה. ייתכן שהוא עסוק או שאין חיבור לאינטרנט.' 'Warning'
+        }
+        Finish-UpdateCheck
+    }
 }
 
 # ---------- About window ----------
@@ -315,6 +436,11 @@ $miCopy.Add_Click({
     } catch { }
 })
 $script:Notify.Add_DoubleClick({ try { Show-About } catch { } })
+$script:UpdateTimer = New-Object System.Windows.Forms.Timer
+$script:UpdateTimer.Interval = 1000
+$script:UpdateTimer.Add_Tick({ try { Poll-UpdateCheck } catch { } })
+$script:MiUpdate.Add_Click({ try { Start-UpdateCheck } catch { } })
+$script:StartVersion = (Read-Status)['version']
 
 [void](Update-Ui $true)
 

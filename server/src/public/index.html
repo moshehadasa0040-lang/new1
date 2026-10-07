@@ -20,8 +20,12 @@
 <div id="dashboard-screen" class="screen hidden">
   <header>
     <h1>מחשבים מנוהלים</h1>
-    <button id="logout-btn" class="secondary">התנתק</button>
+    <div class="header-actions">
+      <a id="download-btn" class="btn-link" href="/api/admin/installer" download>הורד את התוכנה</a>
+      <button id="logout-btn" class="secondary">התנתק</button>
+    </div>
   </header>
+  <div id="version-summary" class="version-summary"></div>
 
   <div class="toolbar">
     <input type="search" id="search-input" placeholder="חיפוש לפי מספר מחשב או שם..." autocomplete="off" />

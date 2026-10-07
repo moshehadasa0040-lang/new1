@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const store = require('../store');
 const { requireAdmin } = require('../auth');
 const { OFFLINE_AFTER_SECONDS } = require('./agent');
+const release = require('../release');
 
 const router = express.Router();
 
@@ -65,6 +66,25 @@ router.get('/devices', requireAdmin, async (req, res) => {
     return { ...d, status };
   });
   res.json({ devices });
+});
+
+// --- Latest agent version + installer download ---------------------------------
+router.get('/latest-release', requireAdmin, async (req, res) => {
+  try {
+    const { version, published_at, size } = await release.getLatest();
+    res.json({ version, published_at, size });
+  } catch (e) {
+    res.status(502).json({ error: 'github_unreachable' });
+  }
+});
+
+router.get('/installer', requireAdmin, async (req, res) => {
+  try {
+    await release.streamInstaller(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: e.message || 'download_failed' });
+    else res.destroy();
+  }
 });
 
 router.get('/removed', requireAdmin, async (req, res) => {

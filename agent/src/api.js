@@ -28,7 +28,11 @@ async function register(hardwareId) {
 }
 
 async function heartbeat(deviceId, deviceToken) {
-  const res = await client(deviceId, deviceToken).post('/api/agent/heartbeat', {});
+  const res = await client(deviceId, deviceToken).post('/api/agent/heartbeat', {
+    // Sent every time (not just at registration) so the dashboard shows the
+    // version that is really installed, also after an auto-update.
+    agentVersion: require('../package.json').version
+  });
   return res.data; // { unlockedUntil, commands }
 }
 

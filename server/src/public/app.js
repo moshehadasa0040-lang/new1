@@ -4,6 +4,40 @@ const deviceList = document.getElementById('device-list');
 const searchInput = document.getElementById('search-input');
 const deviceCount = document.getElementById('device-count');
 let lastDevices = [];
+let latestVersion = '';
+
+// "1.13.10" > "1.13.9": compare numerically, part by part.
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// Version state of one computer: 'ok' | 'old' | 'unknown'.
+// 'unknown' = the computer never reported its live version (it still runs an
+// agent older than 1.13.8, which only told the server its version once, at
+// registration - that number is stale, so it is not shown as fact).
+function versionState(d) {
+  if (!d.agent_version_at || !d.agent_version) return 'unknown';
+  if (!latestVersion) return 'ok';
+  return cmpVersion(d.agent_version, latestVersion) < 0 ? 'old' : 'ok';
+}
+
+async function loadLatest() {
+  try {
+    const r = await api('/api/admin/latest-release');
+    latestVersion = r.version || '';
+    const btn = document.getElementById('download-btn');
+    if (btn && latestVersion) btn.textContent = `הורד את התוכנה (גרסה ${latestVersion})`;
+  } catch (e) {
+    // GitHub unreachable or session expired: keep the previous value.
+  }
+  renderDevices(lastDevices);
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -63,7 +97,9 @@ function showDashboard() {
   loginScreen.classList.add('hidden');
   dashboardScreen.classList.remove('hidden');
   loadDevices();
+  loadLatest();
   setInterval(loadDevices, 10000); // refresh every 10s
+  setInterval(loadLatest, 5 * 60 * 1000); // server caches it for 10 min anyway
 }
 
 document.getElementById('login-btn').addEventListener('click', async () => {
@@ -183,6 +219,7 @@ function filterDevices(devices) {
 
 function renderDevices(allDevices) {
   if (deviceCount) deviceCount.textContent = allDevices.length ? `${allDevices.length} מחשבים` : '';
+  renderVersionSummary(allDevices);
   const devices = filterDevices(allDevices);
   if (allDevices.length && !devices.length) {
     deviceList.innerHTML = '<div class="empty-state">לא נמצא מחשב שמתאים לחיפוש.</div>';
@@ -204,7 +241,7 @@ function renderDevices(allDevices) {
           <div class="device-name">${escapeHtml(d.name)}</div>
           <div class="device-meta">
             ${d.hostname ? escapeHtml(d.hostname) + ' · ' : ''}
-            ${d.agent_version ? 'גרסה ' + escapeHtml(d.agent_version) + ' · ' : ''}
+            ${versionBadge(d)}
             נראה לאחרונה: ${d.last_seen ? new Date(d.last_seen).toLocaleString('he-IL') : 'מעולם לא'}
           </div>
         </div>
@@ -307,6 +344,27 @@ function renderDevices(allDevices) {
       loadDevices();
     }));
   });
+}
+
+function versionBadge(d) {
+  const st = versionState(d);
+  if (st === 'unknown') return '<span class="ver-badge ver-unknown" title="המחשב עדיין לא דיווח גרסה. הוא ידווח אחרי העדכון האוטומטי הבא.">גרסה לא ידועה</span> · ';
+  if (st === 'old') return `<span class="ver-badge ver-old" title="הגרסה האחרונה היא ${escapeHtml(latestVersion)}">גרסה ${escapeHtml(d.agent_version)} · לא עדכני</span> · `;
+  return `<span class="ver-badge ver-ok">גרסה ${escapeHtml(d.agent_version)} · עדכני</span> · `;
+}
+
+function renderVersionSummary(devices) {
+  const el = document.getElementById('version-summary');
+  if (!el) return;
+  if (!devices.length) { el.textContent = ''; return; }
+  const count = { ok: 0, old: 0, unknown: 0 };
+  devices.forEach((d) => { count[versionState(d)] += 1; });
+  const parts = [];
+  if (latestVersion) parts.push(`הגרסה האחרונה: <b>${escapeHtml(latestVersion)}</b>`);
+  parts.push(`<span class="ver-badge ver-ok">${count.ok} עדכניים</span>`);
+  if (count.old) parts.push(`<span class="ver-badge ver-old">${count.old} לא עדכניים</span>`);
+  if (count.unknown) parts.push(`<span class="ver-badge ver-unknown">${count.unknown} טרם דיווחו גרסה</span>`);
+  el.innerHTML = parts.join(' ');
 }
 
 function escapeHtml(str) {

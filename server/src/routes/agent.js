@@ -60,10 +60,19 @@ router.post('/register', async (req, res) => {
 router.post('/heartbeat', requireDevice, async (req, res) => {
   const device = req.device;
 
-  await store.upsertDevice(device.id, {
+  const fields = {
     status: 'online',
     last_seen: new Date().toISOString()
-  });
+  };
+  // Agents from 1.13.8 on report their real version on every heartbeat.
+  // agent_version_at marks that the number is live (older records only hold
+  // the version from the first registration, which goes stale after updates).
+  const reported = String((req.body && req.body.agentVersion) || '').trim();
+  if (/^[0-9A-Za-z.+-]{1,32}$/.test(reported) && (reported !== device.agent_version || !device.agent_version_at)) {
+    fields.agent_version = reported;
+    fields.agent_version_at = new Date().toISOString();
+  }
+  await store.upsertDevice(device.id, fields);
 
   await store.ensureNumber(device);
   const commands = await store.drainPendingCommands(device.id);

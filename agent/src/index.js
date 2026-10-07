@@ -3,6 +3,7 @@
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
 const os = require('os');
+const fs = require('fs');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
@@ -361,6 +362,19 @@ async function main() {
   deviceToken = state.deviceToken;
   const version = require('../package.json').version;
   logger.log(`Agent v${version} starting. Device ID: ${deviceId}. Blocked extensions: ${config.MOVIE_EXTENSIONS.join(', ')}`);
+
+  // If watchdog.bat just resumed us from a PAUSED state (something else on
+  // this machine paused the service - the agent itself never does), it left
+  // a marker line in the log right before restarting us. Surface that on the
+  // dashboard so it's visible without having to check each machine by hand.
+  // Read-only: this only reports, it never touches the other service.
+  try {
+    const tail = fs.readFileSync(logger.LOG_FILE, 'utf8').split('\n').slice(-20);
+    const pausedLine = tail.reverse().find((l) => l.includes('[watchdog] Service was PAUSED'));
+    if (pausedLine) {
+      alerts.report(`השירות הושהה על ידי תוכנה אחרת במחשב (לא על ידי הסוכן) וחזר לפעול אוטומטית: ${pausedLine.trim()}`);
+    }
+  } catch (e) { /* log file may not exist yet on first-ever run */ }
 
   // Diagnostics: who the service runs as matters - locking files needs
   // SYSTEM / administrator rights.

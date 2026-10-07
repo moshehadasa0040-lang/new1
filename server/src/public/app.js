@@ -117,7 +117,7 @@ document.getElementById('login-btn').addEventListener('click', async () => {
 });
 
 document.getElementById('update-all-btn').addEventListener('click', () => runAction(async () => {
-  if (!confirm('לשלוח בקשת עדכון לכל המחשבים המחוברים שאינם עדכניים?\nהם יתעדכנו בהפרש של כמה שניות זה מזה, ובכל אחד ההגנה תופסק לכמה שניות.')) return;
+  if (!confirm('לשלוח בקשת עדכון לכל המחשבים המחוברים שאינם עדכניים?\nהם יתעדכנו בהפרש של כמה שניות זה מזה, ובכל אחד השירות יופעל מחדש לשניות ספורות.')) return;
   const r = await api('/api/admin/devices/update-outdated', { method: 'POST' });
   alert(`נשלחה בקשת עדכון ל-${r.queued} מחשבים (לגרסה ${r.latest}).`);
 }));
@@ -282,7 +282,7 @@ function renderDevices(allDevices) {
     card.querySelector('.update-btn')?.addEventListener('click', () => runAction(async () => {
       const d = lastDevices.find((x) => x.id === id);
       const offline = d && d.status !== 'online';
-      if (!confirm('לעדכן את הסוכן במחשב הזה לגרסה האחרונה?\nההגנה תופסק לכמה שניות בזמן ההתקנה.' + (offline ? '\n\nהמחשב מנותק כרגע, העדכון יתבצע כשיתחבר.' : ''))) return;
+      if (!confirm('לעדכן את הסוכן במחשב הזה לגרסה האחרונה?\nההגנה ממשיכה לפעול בזמן ההתקנה, והשירות יופעל מחדש לשניות ספורות.' + (offline ? '\n\nהמחשב מנותק כרגע, העדכון יתבצע כשיתחבר.' : ''))) return;
       await api(`/api/admin/devices/${id}/update`, { method: 'POST' });
       alert('בקשת העדכון נשלחה. המחשב יקבל אותה תוך כדקה. התוצאה תופיע ב"אירועים והתראות", והגרסה החדשה בכרטיס אחרי כמה דקות.');
     }));

@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.12"
+  #define MyAppVersion "1.13.13"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -207,6 +207,36 @@ begin
   end;
 end;
 
+// ---- Zero-gap upgrade ----------------------------------------------------------
+// The video locks are NTFS permissions: they stay on the files while the service is
+// not running. What a stopped service loses is only the player blocking and the locking
+// of NEW files. So an automatic (silent) update of an existing install does not stop
+// anything while the files are replaced: the old agent keeps running from its old files
+// (a running exe cannot be deleted but CAN be renamed - they are moved aside as *.old),
+// the new files are written under the normal names, and the service is restarted once at
+// the end: a few seconds instead of minutes (and no "file in use" errors, because nothing
+// has to be stopped before copying). An interactive install keeps the classic flow.
+var
+  SilentUpgrade: Boolean;
+
+function ServiceExists: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    and (ResultCode = 0);
+end;
+
+function IsSilentUpgrade: Boolean;
+begin
+  Result := SilentUpgrade;
+end;
+
+function IsNotSilentUpgrade: Boolean;
+begin
+  Result := not SilentUpgrade;
+end;
+
 // Stops the watchdog, then the service, and WAITS until the agent exe is really gone.
 procedure StopAgentForInstall;
 var
@@ -236,6 +266,29 @@ begin
   FreeFileForReplace(ExpandConstant('{app}\nssm.exe'), False);
 end;
 
+procedure PrepareUpgrade;
+var
+  Exe, Nssm: String;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  Nssm := ExpandConstant('{app}\nssm.exe');
+  SilentUpgrade := WizardSilent and ServiceExists and FileExists(Exe) and FileExists(Nssm);
+  if SilentUpgrade then
+  begin
+    FreeFileForReplace(Exe, True);
+    FreeFileForReplace(Nssm, True);
+    if FileExists(Exe) or FileExists(Nssm) then
+    begin
+      AppendLog('In-place upgrade not possible (could not move the running files aside) - falling back to stop-and-replace.');
+      SilentUpgrade := False;
+    end
+    else
+      AppendLog('Upgrading in place: the service keeps protecting while the files are replaced.');
+  end;
+  if not SilentUpgrade then
+    StopAgentForInstall;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   DeviceName: String;
@@ -250,7 +303,7 @@ begin
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
     StopTrayProcesses;
-    StopAgentForInstall;
+    PrepareUpgrade;
   end;
   if CurStep = ssPostInstall then
   begin
@@ -328,9 +381,9 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 ; install/uninstall cycle silently fails, and Inno Setup doesn't surface
 ; that failure by default, leaving the service simply not running with no
 ; visible error. Then installs fresh and configures it.
-Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."
-Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."
-Filename: "{app}\nssm.exe"; Parameters: "install {#MyServiceName} ""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing service..."
+Filename: "{app}\nssm.exe"; Parameters: "stop {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."; Check: IsNotSilentUpgrade
+Filename: "{app}\nssm.exe"; Parameters: "remove {#MyServiceName} confirm"; Flags: runhidden waituntilterminated; StatusMsg: "Preparing service..."; Check: IsNotSilentUpgrade
+Filename: "{app}\nssm.exe"; Parameters: "install {#MyServiceName} ""{app}\{#MyAppExeName}"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing service..."; Check: IsNotSilentUpgrade
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppDirectory ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} Start SERVICE_AUTO_START"; Flags: runhidden waituntilterminated
 Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppExit Default Restart"; Flags: runhidden waituntilterminated
@@ -361,8 +414,11 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 104
 ; long locking step isn't a blank wait. It reads install-progress.txt written by
 ; the agent and closes itself when the agent finishes.
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" install-splash.ps1"; Flags: nowait runhidden skipifsilent
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."
-Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."; Check: IsNotSilentUpgrade
+Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."; Check: IsNotSilentUpgrade
+; Automatic update of an existing install: the service was never stopped, restart it once so it runs the new files.
+; (Video locks stay on the files; the agent re-checks all of them right after it starts.)
+Filename: "{app}\nssm.exe"; Parameters: "restart {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Restarting service..."; Check: IsSilentUpgrade
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; StatusMsg: "Applying program restrictions..."
 ; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser skipifsilent

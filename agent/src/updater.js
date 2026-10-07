@@ -292,7 +292,7 @@ function describeResult(r) {
   };
   switch (r.result) {
     case 'uptodate': return `עדכון הסוכן: אין עדכון חדש, גרסה ${r.current} היא העדכנית ביותר`;
-    case 'updating': return `עדכון הסוכן: מעדכן מגרסה ${r.current} לגרסה ${r.latest} (ההגנה תופסק לכמה שניות)`;
+    case 'updating': return `עדכון הסוכן: מעדכן מגרסה ${r.current} לגרסה ${r.latest} (ההגנה ממשיכה לפעול, השירות יופעל מחדש לשניות ספורות)`;
     case 'disabled': return 'עדכון הסוכן: העדכון האוטומטי כבוי במחשב הזה (קיים הקובץ no-auto-update.txt)';
     case 'busy': return 'עדכון הסוכן: המחשב עסוק כרגע (עדכון או הסרה מתבצעים), נסו שוב בעוד רגע';
     case 'incomplete': return `עדכון הסוכן: גרסה ${r.latest} פורסמה אבל קובץ ההתקנה שלה עדיין לא מלא ב-GitHub`;

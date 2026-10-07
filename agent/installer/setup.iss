@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.9"
+  #define MyAppVersion "1.13.10"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -143,12 +143,60 @@ begin
   AppendLog('Closed the tray icon / progress window processes (exit ' + IntToStr(ResultCode) + ').');
 end;
 
+// The scheduled task is deleted at the start of setup, but a watchdog.bat run that is
+// ALREADY going keeps looping for up to a minute and starts the service again every
+// ~15s ("sc start"). Setup stops the service to replace the agent exe, the watchdog
+// brings it back, and Windows refuses to delete a running exe:
+// "DeleteFile failed; code 5. Access is denied." So kill those loops first.
+procedure StopWatchdogLoops;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ContentBlockerWatchdog /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq ''cmd.exe'' -and $_.CommandLine -match ''watchdog\.bat'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function AgentExeRunning: Boolean;
+var
+  ResultCode: Integer;
+begin
+  // find.exe exits 0 when it finds the name, 1 when it does not.
+  Result := Exec(ExpandConstant('{sys}\cmd.exe'),
+    '/c tasklist /fi "imagename eq {#MyAppExeName}" | find /i "{#MyAppExeName}" >nul',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// Stops the watchdog, then the service, and WAITS until the agent exe is really gone.
+procedure StopAgentForInstall;
+var
+  ResultCode, I: Integer;
+  Nssm: String;
+begin
+  StopWatchdogLoops;
+  Nssm := ExpandConstant('{app}\nssm.exe');
+  if FileExists(Nssm) then
+    Exec(Nssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  for I := 1 to 20 do
+  begin
+    if not AgentExeRunning then Break;
+    // Service is stopped by now (nssm waited), so killing the process cannot make nssm respawn it.
+    if I >= 6 then
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(500);
+  end;
+  if AgentExeRunning then
+    AppendLog('WARNING: the agent process is still running after trying to stop it - copying its file may fail.')
+  else
+    AppendLog('Service and watchdog stopped; the agent exe is not running.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   DeviceName: String;
   Lines: TArrayOfString;
   ResultCode: Integer;
-  OldNssm: String;
 begin
   if CurStep = ssInstall then
   begin
@@ -157,11 +205,8 @@ begin
     // exe open, which makes copying the new files fail or get postponed
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
-    Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ContentBlockerWatchdog /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     StopTrayProcesses;
-    OldNssm := ExpandConstant('{app}\nssm.exe');
-    if FileExists(OldNssm) then
-      Exec(OldNssm, 'stop {#MyServiceName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    StopAgentForInstall;
   end;
   if CurStep = ssPostInstall then
   begin
@@ -199,6 +244,14 @@ begin
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     AppendLog('Install finished. (The line above, if present, is the Windows service state.)');
   end;
+end;
+
+// Runs before the [UninstallRun] steps: no watchdog loop may restart the service while
+// files are being unlocked and removed.
+function InitializeUninstall: Boolean;
+begin
+  StopWatchdogLoops;
+  Result := True;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -1,9 +1,20 @@
 @echo off
-REM Run every minute by the scheduled task "ContentBlockerWatchdog" (as SYSTEM).
+REM The scheduled task "ContentBlockerWatchdog" triggers this once a minute
+REM (schtasks.exe itself cannot schedule finer than 1-minute steps). To react
+REM faster than that, this one run loops internally, checking every ~15s for
+REM about a minute, so a new trigger is always about to take over right as
+REM this loop winds down - giving close to continuous 15s coverage.
 REM Only ever touches ContentBlockerAgent itself - never any other service.
 setlocal
 set LOG=C:\Users\Public\Documents\ContentBlockerLogs\agent.log
 
+for /L %%i in (1,1,4) do (
+  call :check
+  ping -n 16 127.0.0.1 >nul
+)
+goto :eof
+
+:check
 sc query ContentBlockerAgent | find "RUNNING" >nul
 if not errorlevel 1 goto :eof
 
@@ -23,4 +34,4 @@ if not errorlevel 1 (
   >>"%LOG%" echo [watchdog] Service was not running - starting it.
   sc start ContentBlockerAgent >nul 2>&1
 )
-exit /b 0
+goto :eof

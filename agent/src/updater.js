@@ -62,11 +62,19 @@ function run(file, args) {
 }
 
 async function download(url, dest, expectedSize) {
+  // Accept: application/octet-stream makes the GitHub REST *asset* endpoint
+  // (api.github.com/repos/.../releases/assets/<id>, as opposed to the
+  // browser-facing github.com/.../releases/download/... link) respond with a
+  // redirect straight to the CDN that actually holds the file - without the
+  // request ever touching github.com itself. Some networks (e.g. a filtered
+  // computer-lab connection) allow api.github.com and the CDN domain but
+  // block github.com outright, which breaks the browser_download_url link
+  // but not this one.
   const res = await axios.get(url, {
     responseType: 'stream',
     timeout: 120000,
     maxRedirects: 5,
-    headers: { 'User-Agent': 'content-blocker-agent' }
+    headers: { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
   });
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(dest);
@@ -95,7 +103,9 @@ async function checkOnce({ isBusy, notify } = {}) {
     if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return;
 
     const current = require('../package.json').version;
-    const base = `https://github.com/${config.UPDATE_REPO}/releases/download/`;
+    // Every GitHub call below uses only api.github.com, never github.com -
+    // see the note in download() for why.
+    const apiBase = `https://api.github.com/repos/${config.UPDATE_REPO}/releases/assets/`;
     const rel = await axios.get(`https://api.github.com/repos/${config.UPDATE_REPO}/releases/latest`, {
       timeout: 20000,
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'content-blocker-agent' }
@@ -109,8 +119,8 @@ async function checkOnce({ isBusy, notify } = {}) {
       logger.log(`Update ${latest} found but the release is missing the installer or its .sha256 - skipping.`);
       return;
     }
-    // Only ever download from this repo's release downloads.
-    if (!String(exeAsset.browser_download_url).startsWith(base) || !String(shaAsset.browser_download_url).startsWith(base)) {
+    // Only ever download assets that belong to this exact repo's releases.
+    if (!String(exeAsset.url).startsWith(apiBase) || !String(shaAsset.url).startsWith(apiBase)) {
       logger.log('Update skipped: asset URL is not from the configured repository.');
       return;
     }
@@ -122,14 +132,15 @@ async function checkOnce({ isBusy, notify } = {}) {
     writeState({ version: latest, attemptedAt: Date.now() });
     fs.mkdirSync(UPDATE_DIR, { recursive: true });
 
-    const shaText = (await axios.get(shaAsset.browser_download_url, {
-      timeout: 20000, responseType: 'text', headers: { 'User-Agent': 'content-blocker-agent' }
+    const shaText = (await axios.get(shaAsset.url, {
+      timeout: 20000, responseType: 'text',
+      headers: { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
     })).data;
     const expectedHash = (/[0-9a-fA-F]{64}/.exec(String(shaText)) || [])[0];
     if (!expectedHash) throw new Error('could not read the SHA-256 file');
 
     const exePath = path.join(UPDATE_DIR, `ContentBlockerAgent-Setup-${latest}.exe`);
-    await download(exeAsset.browser_download_url, exePath, exeAsset.size);
+    await download(exeAsset.url, exePath, exeAsset.size);
     const actual = await sha256File(exePath);
     if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
       fs.rmSync(exePath, { force: true });

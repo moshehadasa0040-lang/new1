@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.10"
+  #define MyAppVersion "1.13.11"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -72,6 +72,10 @@ Source: "..\ui\tray.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\ui\install-splash.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\ui\ps-hidden.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\ui\assets\*"; DestDir: "{app}\assets"; Excludes: "wizard-*.bmp"; Flags: ignoreversion
+
+[InstallDelete]
+; Leftovers of in-use files that were moved aside by FreeFileForReplace in an earlier update.
+Type: files; Name: "{app}\*.old"
 
 [Registry]
 ; Tray icon starts for every user at logon. It only displays state - the
@@ -168,6 +172,41 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
+// Appends the output of a console command to agent.log (diagnostics for failed updates).
+procedure LogCmd(Cmd: String);
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\cmd.exe'),
+    '/c ' + Cmd + ' >> "C:\Users\Public\Documents\ContentBlockerLogs\agent.log" 2>&1',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// Makes one old file of the install folder replaceable, whatever is wrong with it:
+//  - an odd/explicit ACL (owner, deny entry) -> take ownership and reset to the inherited
+//    defaults; that is what "DeleteFile failed; code 5. Access is denied." means for a
+//    file that nothing is running from;
+//  - a program that is still running from it -> it cannot be deleted but it CAN be
+//    renamed, so move it out of the way (the new file is then written under the old name;
+//    the *.old leftovers are removed by [InstallDelete] / the next install).
+procedure FreeFileForReplace(FileName: String; Running: Boolean);
+var
+  ResultCode: Integer;
+begin
+  if not FileExists(FileName) then Exit;
+  LogCmd('icacls "' + FileName + '"');
+  Exec(ExpandConstant('{sys}\takeown.exe'), '/f "' + FileName + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\icacls.exe'), '"' + FileName + '" /reset /c', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if Running then
+  begin
+    DeleteFile(FileName + '.old');
+    if RenameFile(FileName, FileName + '.old') then
+      AppendLog('Moved the in-use file aside: ' + FileName + ' -> .old')
+    else
+      AppendLog('WARNING: could not move the in-use file aside: ' + FileName);
+  end;
+end;
+
 // Stops the watchdog, then the service, and WAITS until the agent exe is really gone.
 procedure StopAgentForInstall;
 var
@@ -186,10 +225,15 @@ begin
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(500);
   end;
+  AppendLog('--- state just before the files are replaced ---');
+  LogCmd('sc query {#MyServiceName} | findstr /i STATE');
+  LogCmd('tasklist /fi "imagename eq {#MyAppExeName}" /fo list | findstr /i "PID"');
   if AgentExeRunning then
-    AppendLog('WARNING: the agent process is still running after trying to stop it - copying its file may fail.')
+    AppendLog('WARNING: the agent process is still running after trying to stop it.')
   else
     AppendLog('Service and watchdog stopped; the agent exe is not running.');
+  FreeFileForReplace(ExpandConstant('{app}\{#MyAppExeName}'), AgentExeRunning);
+  FreeFileForReplace(ExpandConstant('{app}\nssm.exe'), False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

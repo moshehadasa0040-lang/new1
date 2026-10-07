@@ -84,10 +84,19 @@ async function download(url, dest, expectedSize) {
   });
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(dest);
+    // axios' timeout only covers the response headers; without this a download that
+    // stalls halfway would wait forever (the "update never finishes" symptom).
+    let stall;
+    const arm = () => {
+      clearTimeout(stall);
+      stall = setTimeout(() => res.data.destroy(new Error('download stalled (no data for 60 seconds)')), 60 * 1000);
+    };
+    arm();
+    res.data.on('data', arm);
     res.data.pipe(out);
-    res.data.on('error', reject);
-    out.on('error', reject);
-    out.on('finish', resolve);
+    res.data.on('error', (e) => { clearTimeout(stall); reject(e); });
+    out.on('error', (e) => { clearTimeout(stall); reject(e); });
+    out.on('finish', () => { clearTimeout(stall); resolve(); });
   });
   if (expectedSize && fs.statSync(dest).size !== expectedSize) {
     throw new Error(`downloaded size ${fs.statSync(dest).size} != expected ${expectedSize}`);
@@ -176,11 +185,24 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
     const bat = path.join(UPDATE_DIR, 'apply-update.bat');
     const logFile = logger.LOG_FILE;
     // NOTE: a space before ">>" matters - "0>>" would be read as a handle redirect.
+    const installDir = path.dirname(process.execPath);
+    const setupLog = path.join(UPDATE_DIR, 'setup.log');
+    // The installer runs with a 10 minute limit. A silent Setup that hits a locked file
+    // shows its error dialog in session 0 where nobody can click it, and would otherwise
+    // wait forever - with the service already stopped, i.e. NO PROTECTION. After the
+    // installer (finished, failed or killed) the service and the watchdog are always
+    // started again; both are no-ops when the new installer already did it.
+    const runInstaller =
+      `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath '${exePath}' ` +
+      `-ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/LOG=${setupLog}' -PassThru; ` +
+      `if (-not $p.WaitForExit(600000)) { & taskkill.exe /f /t /pid $p.Id | Out-Null; Get-Process | Where-Object { $_.Name -like 'ContentBlockerAgent-Setup*' } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 99 } else { exit $p.ExitCode }"`;
     fs.writeFileSync(bat, [
       '@echo off',
       `echo [updater] starting silent install of ${latest} >>"${logFile}"`,
-      `"${exePath}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG="${path.join(UPDATE_DIR, 'setup.log')}"`,
-      `echo [updater] installer exit code %errorlevel% >>"${logFile}"`,
+      runInstaller,
+      `echo [updater] installer exit code %errorlevel% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
+      `sc start ContentBlockerAgent >nul 2>&1`,
+      `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
       `del /f /q "${exePath}" >nul 2>&1`,
       `schtasks /delete /tn ${TASK_NAME} /f >nul 2>&1`,
       ''

@@ -14,6 +14,7 @@ const fileLock = require('./fileLock');
 const watcher = require('./watcher');
 const alerts = require('./alerts');
 const updater = require('./updater');
+const defender = require('./defender');
 const health = require('./health');
 const logger = require('./logger');
 const statusFile = require('./status');
@@ -372,6 +373,9 @@ async function main() {
   logger.log(`Blocking is ${blocker.isBlocking() ? 'ON' : 'OFF'} at startup. Previously tracked locked files: see locked-files.json.`);
 
   blocker.start();
+
+  // Best-effort, runs once per startup; see defender.js for why this exists.
+  defender.ensureExclusions().catch(() => {});
 
   // 1) QUICK scan of user folders (Videos, Downloads, Desktop, Public...)
   //    runs immediately - seconds, not minutes - so files people actually

@@ -77,7 +77,7 @@ function getRecent(maxLines = 150, hours = 24, sinceMs = null) {
       const key = l.replace(/^\[[^\]]*\]\s*/, '').replace(/\d{2,}/g, '#');
       const g = groups.get(key);
       if (g) { g.count++; g.lastTs = last; } else {
-        const rec = { line: l, count: 1, firstTs: last, lastTs: last };
+        const rec = { line: l, count: 1, firstTs: last, lastTs: last, hasTs: t !== null };
         groups.set(key, rec); order.push(rec);
       }
     }
@@ -86,7 +86,7 @@ function getRecent(maxLines = 150, hours = 24, sinceMs = null) {
       .replace(/^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/, (m, iso) => `[${fmtShort(new Date(iso).getTime())}]`)
       .replace(/^\[(\d{4})-(\d\d)-(\d\d) (\d\d:\d\d:\d\d)\] installer:/, '[$3.$2 $4] installer:');
     const hhmm = (ts) => fmtShort(ts).slice(6);
-    let out = order.map((g) => (g.count > 1 ? `${localize(g.line)}  (x${g.count}, ${hhmm(g.firstTs)}-${hhmm(g.lastTs)})` : localize(g.line)));
+    let out = order.map((g) => (g.count > 1 ? `${localize(g.line)}  (x${g.count}${g.hasTs ? `, ${hhmm(g.firstTs)}-${hhmm(g.lastTs)}` : ''})` : localize(g.line)));
     out = out.slice(-maxLines);
     let text = out.join('\n');
     if (text.length > 40000) text = text.slice(-40000);

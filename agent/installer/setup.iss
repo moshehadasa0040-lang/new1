@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.13"
+  #define MyAppVersion "1.13.14"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -207,6 +207,53 @@ begin
   end;
 end;
 
+// ---- Tray icon survives updates -------------------------------------------------
+// Since 1.13.9 the tray loads its images from memory and no longer holds files of the
+// install folder, so it can keep running while files are replaced; after the update it
+// notices the new version and restarts itself (see Restart-Tray in tray.ps1). Only an
+// OLD tray (that opened its "About" window) still locks assets\logo-128.png: that is
+// detected by trying to rename the file, and only then are the tray processes closed.
+var
+  InstallStartTick: Cardinal;
+  TraysKilled: Boolean;
+
+function TrayHoldsFiles: Boolean;
+var
+  Logo: String;
+begin
+  Result := False;
+  Logo := ExpandConstant('{app}\assets\logo-128.png');
+  if not FileExists(Logo) then Exit;
+  if RenameFile(Logo, Logo + '.chk') then
+    RenameFile(Logo + '.chk', Logo)
+  else
+    Result := True;
+end;
+
+// Best effort: start the tray again in the session(s) of the logged-on user(s) after a
+// SILENT update had to close an old tray. The installer runs as SYSTEM in session 0 and
+// cannot start anything on the user's desktop itself, so a one-time scheduled task that
+// runs as the "Users" group, interactively, is used. If Windows refuses, the icon comes
+// back at the next logon like before (the result is written to agent.log).
+procedure RelaunchTray;
+var
+  ResultCode: Integer;
+  Cmd: String;
+begin
+  Cmd := '"\"' + ExpandConstant('{sys}\wscript.exe') + '\" \"' + ExpandConstant('{app}\ps-hidden.vbs') + '\" tray.ps1"';
+  Exec(ExpandConstant('{sys}\schtasks.exe'),
+    '/create /tn ContentBlockerTrayRelaunch /sc once /st 00:00 /ru "BUILTIN\Users" /it /rl limited /f /tr ' + Cmd,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  AppendLog('Tray relaunch task created (exit ' + IntToStr(ResultCode) + ').');
+  if ResultCode = 0 then
+  begin
+    Exec(ExpandConstant('{sys}\schtasks.exe'), '/run /tn ContentBlockerTrayRelaunch', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    AppendLog('Tray relaunch started (exit ' + IntToStr(ResultCode) + ').');
+    Sleep(3000);
+  end;
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn ContentBlockerTrayRelaunch /f', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 // ---- Zero-gap upgrade ----------------------------------------------------------
 // The video locks are NTFS permissions: they stay on the files while the service is
 // not running. What a stopped service loses is only the player blocking and the locking
@@ -302,7 +349,15 @@ begin
     // exe open, which makes copying the new files fail or get postponed
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
-    StopTrayProcesses;
+    InstallStartTick := GetTickCount;
+    TraysKilled := False;
+    if TrayHoldsFiles then
+    begin
+      StopTrayProcesses;
+      TraysKilled := True;
+    end
+    else
+      AppendLog('The tray icon holds no install files - leaving it running (it restarts itself on the new version).');
     PrepareUpgrade;
   end;
   if CurStep = ssPostInstall then
@@ -340,6 +395,12 @@ begin
       '/c sc query {#MyServiceName} | findstr /i "STATE" >> "C:\Users\Public\Documents\ContentBlockerLogs\agent.log"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     AppendLog('Install finished. (The line above, if present, is the Windows service state.)');
+    // How long the install took; the agent reports it to the dashboard's updates report.
+    ForceDirectories(ExpandConstant('{commonappdata}\ContentBlockerAgent\update'));
+    SaveStringToFile(ExpandConstant('{commonappdata}\ContentBlockerAgent\update\last-install.txt'),
+      'version={#MyAppVersion}' + #13#10 + 'seconds=' + IntToStr((GetTickCount - InstallStartTick) div 1000) + #13#10, False);
+    AppendLog('Install took ' + IntToStr((GetTickCount - InstallStartTick) div 1000) + ' seconds.');
+    if TraysKilled and WizardSilent then RelaunchTray;
   end;
 end;
 

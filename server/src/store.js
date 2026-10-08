@@ -82,6 +82,7 @@ async function deleteDevice(id) {
   pipeline.del(deviceKey(id));
   pipeline.del(`device:${id}:pending_cmds`);
   pipeline.del(`device:${id}:events`);
+  pipeline.del(`device:${id}:updates`);
   pipeline.del(`device:${id}:logs`);
   pipeline.srem('devices:index', id);
   if (number) pipeline.srem('devices:numbers', number); // free the number for reuse
@@ -158,6 +159,17 @@ async function addEvent(deviceId, message) {
   await redis.ltrim(`device:${deviceId}:events`, 0, MAX_EVENTS - 1);
 }
 
+// History of agent updates (how long each took, whether it worked) - newest first.
+const MAX_UPDATE_RECORDS = 20;
+async function addUpdateRecord(deviceId, rec) {
+  await redis.lpush(`device:${deviceId}:updates`, JSON.stringify(rec));
+  await redis.ltrim(`device:${deviceId}:updates`, 0, MAX_UPDATE_RECORDS - 1);
+}
+async function listUpdateRecords(deviceId, n = MAX_UPDATE_RECORDS) {
+  const raw = await redis.lrange(`device:${deviceId}:updates`, 0, n - 1);
+  return raw.map((e) => { try { return JSON.parse(e); } catch (err) { return null; } }).filter(Boolean);
+}
+
 async function listEvents(deviceId) {
   const raw = await redis.lrange(`device:${deviceId}:events`, 0, MAX_EVENTS - 1);
   return raw.map((e) => JSON.parse(e));
@@ -206,6 +218,8 @@ module.exports = {
   drainPendingCommands,
   markCommandDone,
   addEvent,
+  addUpdateRecord,
+  listUpdateRecords,
   listEvents,
   saveLogs,
   getLogs,

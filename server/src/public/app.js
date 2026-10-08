@@ -116,6 +116,8 @@ document.getElementById('login-btn').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('updates-report-btn').addEventListener('click', openUpdatesReport);
+
 document.getElementById('update-all-btn').addEventListener('click', () => runAction(async () => {
   if (!confirm('לשלוח בקשת עדכון לכל המחשבים המחוברים שאינם עדכניים?\nהם יתעדכנו בהפרש של כמה שניות זה מזה, ובכל אחד השירות יופעל מחדש לשניות ספורות.')) return;
   const r = await api('/api/admin/devices/update-outdated', { method: 'POST' });
@@ -252,6 +254,7 @@ function renderDevices(allDevices) {
             ${versionBadge(d)}
             נראה לאחרונה: ${d.last_seen ? new Date(d.last_seen).toLocaleString('he-IL') : 'מעולם לא'}
           </div>
+          ${lastUpdateLine(d)}
         </div>
         </div>
         <div>
@@ -360,6 +363,58 @@ function renderDevices(allDevices) {
       loadDevices();
     }));
   });
+}
+
+// 95 -> "1:35 דק'", 40 -> "40 שנ'"; null/undefined -> "-"
+function fmtDur(sec) {
+  if (sec === null || sec === undefined) return '-';
+  if (sec < 60) return `${sec} שנ'`;
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} דק'`;
+}
+
+function lastUpdateLine(d) {
+  if (!d.last_update) return '';
+  let r;
+  try { r = JSON.parse(d.last_update); } catch (e) { return ''; }
+  const when = r.at ? new Date(r.at).toLocaleString('he-IL') : '';
+  const route = r.from ? `${escapeHtml(r.from)} ← ${escapeHtml(r.to)}` : `גרסה ${escapeHtml(r.to)}`;
+  if (r.result === 'success') {
+    return `<div class="update-line">עדכון אחרון: ${route} · הצליח · ${fmtDur(r.total_sec !== null ? r.total_sec : r.install_sec)}${r.total_sec !== null && r.install_sec !== null ? ` (התקנה ${fmtDur(r.install_sec)})` : ''} · ${when}</div>`;
+  }
+  return `<div class="update-line update-failed">עדכון אחרון נכשל: ${route}${r.error ? ' · ' + escapeHtml(r.error) : ''} · ${when}</div>`;
+}
+
+async function openUpdatesReport() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal"><h3>דוח עדכונים</h3><div class="modal-status">טוען...</div>
+    <div class="report-scroll"></div><div class="modal-actions"><button class="close-btn">סגור</button></div></div>`;
+  overlay.querySelector('.close-btn').addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+  const statusEl = overlay.querySelector('.modal-status');
+  const box = overlay.querySelector('.report-scroll');
+  try {
+    const { rows, stats } = await api('/api/admin/update-report');
+    statusEl.textContent = '';
+    if (!rows.length) {
+      box.innerHTML = '<div class="report-stats">עדיין אין נתוני עדכון. הנתונים נאספים מכל מחשב שמתעדכן לגרסה 1.13.14 ומעלה (ומחשב שהותקן ידנית מדווח את זמן ההתקנה).</div>';
+      return;
+    }
+    const stat = `<div class="report-stats">הצליחו: <b>${stats.success}</b> · נכשלו: <b>${stats.failed}</b>` +
+      (stats.avg_total_sec !== null ? ` · זמן כולל ממוצע: <b>${fmtDur(stats.avg_total_sec)}</b>` : '') +
+      (stats.avg_install_sec !== null ? ` · התקנה ממוצעת: <b>${fmtDur(stats.avg_install_sec)}</b>` : '') +
+      (stats.slowest ? ` · האיטי ביותר: ${escapeHtml(stats.slowest.device_name)} (${fmtDur(stats.slowest.total_sec)})` : '') + '</div>';
+    const trig = { auto: 'אוטומטי', dashboard: 'מהדשבורד', unknown: 'ידני / לא ידוע' };
+    const trs = rows.map((r) => `<tr>
+      <td>${escapeHtml(r.device_name)}</td>
+      <td>${r.from ? escapeHtml(r.from) + ' ← ' : ''}${escapeHtml(r.to)}</td>
+      <td>${r.result === 'success' ? 'הצליח' : '<span style="color:#a32d2d">נכשל</span>' + (r.error ? ' · ' + escapeHtml(r.error) : '')}</td>
+      <td>${fmtDur(r.total_sec)}</td><td>${fmtDur(r.download_sec)}</td><td>${fmtDur(r.install_sec)}</td>
+      <td>${trig[r.trigger] || ''}</td><td>${new Date(r.at).toLocaleString('he-IL')}</td></tr>`).join('');
+    box.innerHTML = stat + `<table class="report-table"><thead><tr><th>מחשב</th><th>גרסה</th><th>תוצאה</th><th>זמן כולל</th><th>הורדה</th><th>התקנה</th><th>הופעל</th><th>מתי</th></tr></thead><tbody>${trs}</tbody></table>`;
+  } catch (e) {
+    statusEl.textContent = 'לא הצלחתי לטעון את הדוח';
+  }
 }
 
 function supportsRemoteUpdate(d) {

@@ -121,6 +121,33 @@ router.post('/devices/:id/update', requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Updates report: how long updates took on each computer ---------------------
+router.get('/update-report', requireAdmin, async (req, res) => {
+  const devices = await store.listDevices();
+  const rows = [];
+  for (const d of devices) {
+    const recs = await store.listUpdateRecords(d.id, 10);
+    recs.forEach((r) => rows.push({ ...r, device_id: d.id, device_name: d.name || d.hostname || d.id, current_version: d.agent_version || '' }));
+  }
+  rows.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  const ok = rows.filter((r) => r.result === 'success');
+  const avg = (key) => {
+    const v = ok.map((r) => r[key]).filter((n) => typeof n === 'number');
+    return v.length ? Math.round(v.reduce((s, n) => s + n, 0) / v.length) : null;
+  };
+  const slowest = ok.filter((r) => typeof r.total_sec === 'number').sort((a, b) => b.total_sec - a.total_sec)[0];
+  res.json({
+    rows,
+    stats: {
+      success: ok.length,
+      failed: rows.length - ok.length,
+      avg_total_sec: avg('total_sec'),
+      avg_install_sec: avg('install_sec'),
+      slowest: slowest ? { device_name: slowest.device_name, total_sec: slowest.total_sec } : null
+    }
+  });
+});
+
 router.get('/removed', requireAdmin, async (req, res) => {
   res.json({ removed: await store.listRemovals() });
 });

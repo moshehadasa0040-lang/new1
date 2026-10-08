@@ -57,6 +57,44 @@ router.post('/register', async (req, res) => {
 // POST /api/agent/heartbeat
 // Called periodically (e.g. every 30-60s) by the agent.
 // Returns any pending commands and the current lock state.
+// Sent by the agent after an update (see updater.js reportPending): how long it took.
+function fmtDuration(sec) {
+  if (sec === null || sec === undefined) return '';
+  if (sec < 60) return `${sec} שניות`;
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')} דקות`;
+}
+
+router.post('/update-report', requireDevice, async (req, res) => {
+  const b = req.body || {};
+  const num = (v) => { const n = Number(v); return v !== null && v !== undefined && Number.isFinite(n) && n >= 0 && n < 86400 ? Math.round(n) : null; };
+  const ver = (v) => (/^[0-9A-Za-z.+-]{1,32}$/.test(String(v || '')) ? String(v) : '');
+  const rec = {
+    at: new Date().toISOString(),
+    from: ver(b.from),
+    to: ver(b.to),
+    result: b.result === 'success' ? 'success' : 'failed',
+    trigger: b.trigger === 'auto' || b.trigger === 'dashboard' ? b.trigger : 'unknown',
+    total_sec: num(b.totalSec),
+    wait_sec: num(b.waitSec),
+    download_sec: num(b.downloadSec),
+    install_sec: num(b.installSec),
+    error: String(b.error || '').slice(0, 200)
+  };
+  await store.addUpdateRecord(req.device.id, rec);
+  await store.upsertDevice(req.device.id, { last_update: JSON.stringify(rec) });
+  const route = rec.from ? `${rec.from} ← ${rec.to}` : `גרסה ${rec.to}`;
+  const parts = [];
+  if (rec.download_sec !== null) parts.push(`הורדה ${fmtDuration(rec.download_sec)}`);
+  if (rec.install_sec !== null) parts.push(`התקנה ${fmtDuration(rec.install_sec)}`);
+  if (rec.result === 'success') {
+    const total = rec.total_sec !== null ? `זמן כולל ${fmtDuration(rec.total_sec)}` : '';
+    await store.addEvent(req.device.id, `העדכון הושלם: ${route}${total ? ' · ' + total : ''}${parts.length ? ' (' + parts.join(', ') + ')' : ''}`);
+  } else {
+    await store.addEvent(req.device.id, `העדכון נכשל: ${route}${rec.error ? ' · ' + rec.error : ''}${parts.length ? ' (' + parts.join(', ') + ')' : ''}`);
+  }
+  res.json({ ok: true });
+});
+
 router.post('/heartbeat', requireDevice, async (req, res) => {
   const device = req.device;
 

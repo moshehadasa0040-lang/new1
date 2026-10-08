@@ -29,6 +29,11 @@ const TASK_NAME = 'ContentBlockerUpdate';
 const RETRY_AFTER_MS = 6 * 60 * 60 * 1000; // don't retry the same failed version more often than this
 const UPDATE_DIR = path.join(config.DATA_DIR, 'update');
 const STATE_FILE = path.join(UPDATE_DIR, 'state.json');
+// Timing of the update in progress (for the dashboard's "updates report") and what the
+// installer and apply-update.bat leave behind for the NEW agent to find after the restart.
+const PROGRESS_FILE = path.join(UPDATE_DIR, 'progress.json');
+const EXIT_FILE = path.join(UPDATE_DIR, 'installer-exit.txt');
+const LAST_INSTALL_FILE = path.join(UPDATE_DIR, 'last-install.txt'); // written by setup.iss
 
 let busy = false;
 
@@ -127,7 +132,16 @@ function failureReason(e) {
 // Returns { result, current, latest?, reason?, message? } where result is one of:
 // uptodate | updating | disabled | busy | incomplete | skipped | failed
 // `manual` = asked for by a person: ignores the "already tried this version recently" back-off.
-async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
+function readProgress() {
+  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch (e) { return null; }
+}
+function writeProgress(rec) {
+  try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); fs.writeFileSync(PROGRESS_FILE, JSON.stringify(rec)); } catch (e) { /* ignore */ }
+}
+
+async function checkOnce({ isBusy, notify, manual = false, onProgress, requestedAt } = {}) {
+  const t0 = requestedAt || Date.now();
+  let progress = null;
   if (busy) return { result: 'busy', current: require('../package.json').version };
   busy = true;
   const current = require('../package.json').version;
@@ -163,6 +177,8 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
     }
 
     logger.log(`Update available: ${current} -> ${latest}. Downloading...`);
+    progress = { from: current, to: latest, trigger: manual ? 'dashboard' : 'auto', requestedAt: t0, downloadStartedAt: Date.now() };
+    writeProgress(progress);
     if (onProgress) { try { onProgress('downloading', { current, latest }); } catch (e) { /* ignore */ } }
     writeState({ version: latest, attemptedAt: Date.now() });
     fs.mkdirSync(UPDATE_DIR, { recursive: true });
@@ -182,6 +198,9 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
       throw new Error('SHA-256 mismatch - the download is corrupt, not installing it');
     }
 
+    progress.installStartedAt = Date.now();
+    writeProgress(progress);
+    try { fs.rmSync(EXIT_FILE, { force: true }); fs.rmSync(LAST_INSTALL_FILE, { force: true }); } catch (e) { /* ignore */ }
     const bat = path.join(UPDATE_DIR, 'apply-update.bat');
     const logFile = logger.LOG_FILE;
     // NOTE: a space before ">>" matters - "0>>" would be read as a handle redirect.
@@ -200,6 +219,8 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
       '@echo off',
       `echo [updater] starting silent install of ${latest} >>"${logFile}"`,
       runInstaller,
+      // The space before ">" matters here too ("0>" would be a handle redirect).
+      `echo %errorlevel% >"${EXIT_FILE}"`,
       `echo [updater] installer exit code %errorlevel% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
       `sc start ContentBlockerAgent >nul 2>&1`,
       `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
@@ -219,6 +240,10 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress } = {}) {
     return { result: 'updating', current, latest };
   } catch (e) {
     logger.log(`Auto-update failed: ${e.message}`);
+    // Failed before the installer started (download, SHA-256 ...): record it for the report.
+    if (progress && !progress.installStartedAt) {
+      writeProgress({ ...progress, result: 'failed', error: String(e.message).slice(0, 200), finishedAt: Date.now() });
+    }
     return { result: 'failed', current, reason: failureReason(e), message: e.message };
   } finally {
     busy = false;
@@ -282,6 +307,59 @@ function start(opts) {
   }, config.UPDATE_FIRST_CHECK_DELAY_MS);
 }
 
+// Called at startup and every minute. Turns what an update left behind into ONE report for
+// the dashboard: success (this agent now runs the target version - it is the NEW agent
+// reporting), or failure (download/SHA error, installer exit code, or no result at all).
+async function reportPending(send) {
+  const now = Date.now();
+  const current = require('../package.json').version;
+  const rec = readProgress();
+  const inst = (() => { // written by setup.iss at the end of an install: { version, seconds }
+    try {
+      const kv = {};
+      fs.readFileSync(LAST_INSTALL_FILE, 'utf8').split(/\r?\n/).forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i).trim()] = l.slice(i + 1).trim(); });
+      return { version: kv.version, seconds: parseInt(kv.seconds, 10), at: fs.statSync(LAST_INSTALL_FILE).mtimeMs };
+    } catch (e) { return null; }
+  })();
+  const exit = (() => {
+    try { return { value: parseInt(fs.readFileSync(EXIT_FILE, 'utf8'), 10), at: fs.statSync(EXIT_FILE).mtimeMs }; } catch (e) { return null; }
+  })();
+  const sec = (a, b) => (a && b && b >= a ? Math.round((b - a) / 1000) : null);
+  let out = null;
+
+  if (rec && rec.result === 'failed') {
+    out = { from: rec.from, to: rec.to, trigger: rec.trigger, result: 'failed', error: rec.error || '',
+      waitSec: sec(rec.requestedAt, rec.downloadStartedAt), downloadSec: sec(rec.downloadStartedAt, rec.finishedAt),
+      totalSec: sec(rec.requestedAt, rec.finishedAt) };
+  } else if (rec && rec.installStartedAt && current === rec.to) {
+    if (now - rec.installStartedAt > 30 * 60 * 1000) { try { fs.rmSync(PROGRESS_FILE, { force: true }); } catch (e) { /* ignore */ } return; } // installed by hand much later
+    const measured = inst && inst.version === current && Number.isFinite(inst.seconds) ? inst.seconds : null;
+    out = { from: rec.from, to: rec.to, trigger: rec.trigger, result: 'success',
+      waitSec: sec(rec.requestedAt, rec.downloadStartedAt), downloadSec: sec(rec.downloadStartedAt, rec.installStartedAt),
+      installSec: measured !== null ? measured : sec(rec.installStartedAt, now), totalSec: sec(rec.requestedAt, now) };
+  } else if (rec && rec.installStartedAt) {
+    if (exit && exit.at >= rec.installStartedAt - 1000 && exit.value !== 0) {
+      out = { from: rec.from, to: rec.to, trigger: rec.trigger, result: 'failed',
+        error: exit.value === 99 ? 'ההתקנה נתקעה ונעצרה אחרי 10 דקות (כנראה קובץ נעול)' : `ההתקנה הסתיימה עם קוד שגיאה ${exit.value}`,
+        waitSec: sec(rec.requestedAt, rec.downloadStartedAt), downloadSec: sec(rec.downloadStartedAt, rec.installStartedAt),
+        installSec: sec(rec.installStartedAt, exit.at), totalSec: sec(rec.requestedAt, exit.at) };
+    } else if (now - rec.installStartedAt > 25 * 60 * 1000) {
+      out = { from: rec.from, to: rec.to, trigger: rec.trigger, result: 'failed', error: 'אין תוצאה אחרי 25 דקות',
+        downloadSec: sec(rec.downloadStartedAt, rec.installStartedAt), totalSec: sec(rec.requestedAt, now) };
+    }
+  } else if (!rec && inst && inst.version === current && Number.isFinite(inst.seconds) && now - inst.at < 30 * 60 * 1000) {
+    // Installed by an older agent or by hand: only the installer itself measured something.
+    out = { from: '', to: current, trigger: 'unknown', result: 'success', installSec: inst.seconds };
+  }
+  if (!out) return;
+  try {
+    await send(out);
+    [PROGRESS_FILE, EXIT_FILE, LAST_INSTALL_FILE].forEach((f) => { try { fs.rmSync(f, { force: true }); } catch (e) { /* ignore */ } });
+  } catch (e) {
+    logger.log(`Could not send the update report yet (${e.message}); will retry.`);
+  }
+}
+
 // Hebrew one-liner for the dashboard's event list ("update the agent" button).
 function describeResult(r) {
   const why = {
@@ -301,4 +379,4 @@ function describeResult(r) {
   }
 }
 
-module.exports = { start, checkOnce, isNewer, parseVersion, describeResult };
+module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending };

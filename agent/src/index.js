@@ -253,12 +253,14 @@ async function applyCommand(cmd) {
       // computer would show as offline). delaySec spreads out "update all" requests so
       // 30 computers do not hit GitHub's anonymous rate limit at the same second.
       const delayMs = Math.max(0, Math.min(Number(cmd.payload && cmd.payload.delaySec) || 0, 3600)) * 1000;
+      const requestedAt = Date.now(); // for the report: how long from the click until it is done
       const say = (m) => api.ack(deviceId, deviceToken, cmd.id, m).catch((e) => logger.log(`Ack failed: ${e.message}`));
       setTimeout(async () => {
         try {
           const r = await updater.checkOnce({
             isBusy: () => uninstalling,
             manual: true,
+            requestedAt,
             // Reported BEFORE the installer stops this service - afterwards it cannot.
             onProgress: (stage, info) => { if (stage === 'updating') say(updater.describeResult({ result: 'updating', ...info })); }
           });
@@ -461,6 +463,10 @@ async function main() {
   setInterval(heartbeatLoop, config.HEARTBEAT_INTERVAL_MS);
   // Self-update from the latest GitHub Release (see updater.js).
   updater.start({ isBusy: () => uninstalling, notify: (m) => alerts.report(m) });
+  // Update report for the dashboard (how long the last update took / why it failed).
+  const sendUpdateReport = (rep) => api.updateReport(deviceId, deviceToken, rep);
+  setTimeout(() => updater.reportPending(sendUpdateReport).catch(() => {}), 5 * 1000);
+  setInterval(() => { if (!uninstalling) updater.reportPending(sendUpdateReport).catch(() => {}); }, 60 * 1000);
   // Keeps `updated` fresh so the tray icon can tell the service is alive.
   setInterval(() => {
     if (!uninstalling) writeCurrentStatus();

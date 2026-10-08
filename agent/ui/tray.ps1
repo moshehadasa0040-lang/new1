@@ -198,7 +198,7 @@ function Update-Ui([bool]$quiet) {
     # icon in the user's session. This running copy is the old script, so when the
     # service reports a different version it starts a fresh copy of itself.
     if ($ver -and -not $script:StartVersion) { $script:StartVersion = $ver }
-    elseif ($ver -and $script:StartVersion -and $ver -ne $script:StartVersion) { Restart-Tray }
+    elseif ($ver -and $script:StartVersion -and $ver -ne $script:StartVersion) { Restart-Tray $ver }
 
     if ((-not $quiet) -and $null -ne $script:LastKind -and $script:LastKind -ne $st.Kind) {
         switch ($st.Kind) {
@@ -212,8 +212,14 @@ function Update-Ui([bool]$quiet) {
 }
 
 # ---------- restart after update ----------
-function Restart-Tray {
+function Restart-Tray([string]$newVersion) {
     try {
+        # Per-user note for the NEW copy of the tray: it shows "updated" as a balloon.
+        try {
+            $noteDir = Join-Path $env:LOCALAPPDATA 'ContentBlockerTray'
+            New-Item -ItemType Directory -Force -Path $noteDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $noteDir 'updated.txt') -Value ($script:StartVersion + '|' + $newVersion) -Encoding UTF8
+        } catch { }
         $vbs = Join-Path $script:AppDir 'ps-hidden.vbs'
         if (-not (Test-Path -LiteralPath $vbs)) { return }
         $script:Notify.Visible = $false
@@ -455,6 +461,18 @@ $script:MiUpdate.Add_Click({ try { Start-UpdateCheck } catch { } })
 $script:StartVersion = (Read-Status)['version']
 
 [void](Update-Ui $true)
+
+# Just restarted by an update of the agent? Say so (the protection stayed on throughout).
+try {
+    $noteFile = Join-Path $env:LOCALAPPDATA 'ContentBlockerTray\updated.txt'
+    if (Test-Path -LiteralPath $noteFile) {
+        $parts = ((Get-Content -LiteralPath $noteFile -Raw -Encoding UTF8).Trim()).Split('|')
+        Remove-Item -LiteralPath $noteFile -Force -ErrorAction SilentlyContinue
+        if ($parts.Count -ge 2 -and $parts[1]) {
+            Show-Balloon $script:AppName ('הסוכן עודכן לגרסה ' + $parts[1] + '. ההגנה נשארה פעילה.') 'Info'
+        }
+    }
+} catch { }
 
 # Poll status; also exit by ourselves once the program has been uninstalled
 # (our own script file is gone), so no stale icon lingers.

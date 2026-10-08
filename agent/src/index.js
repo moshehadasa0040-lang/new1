@@ -337,14 +337,14 @@ async function applyCommand(cmd) {
 
 // The server tells us the newest version in every heartbeat answer, so a new release is picked up
 // within about a minute without every computer polling GitHub. The random delay spreads a whole
-// computer room over a couple of minutes instead of all downloading in the same second; the
+// computer room over a minute instead of all downloading in the same second; the
 // "Update agent" button in the dashboard skips it.
 let autoUpdateSeen = '';
 function maybeAutoUpdate(latestVersion) {
   if (!latestVersion || uninstalling || latestVersion === autoUpdateSeen) return;
   if (!updater.isNewer(latestVersion, require('../package.json').version)) return;
   autoUpdateSeen = latestVersion; // once per version; failures are retried by the 30-minute check
-  const delayMs = Math.floor(Math.random() * 90 * 1000);
+  const delayMs = Math.floor(Math.random() * 45 * 1000);
   logger.log(`Server reports version ${latestVersion} - checking for the update in ${Math.round(delayMs / 1000)}s.`);
   setTimeout(() => {
     updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth }).catch(() => {});

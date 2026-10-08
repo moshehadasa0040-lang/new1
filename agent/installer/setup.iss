@@ -213,9 +213,18 @@ end;
 // notices the new version and restarts itself (see Restart-Tray in tray.ps1). Only an
 // OLD tray (that opened its "About" window) still locks assets\logo-128.png: that is
 // detected by trying to rename the file, and only then are the tray processes closed.
+// Milliseconds since Windows started (imported directly: not a built-in script function).
+function WinTickCount: Cardinal;
+external 'GetTickCount@kernel32.dll stdcall';
+
 var
   InstallStartTick: Cardinal;
   TraysKilled: Boolean;
+
+function InstallSeconds: Integer;
+begin
+  Result := Integer((WinTickCount - InstallStartTick) div 1000);
+end;
 
 function TrayHoldsFiles: Boolean;
 var
@@ -349,7 +358,7 @@ begin
     // exe open, which makes copying the new files fail or get postponed
     // until reboot. Stop it BEFORE files are copied. (On a fresh install
     // nssm.exe doesn't exist yet, so this is skipped.)
-    InstallStartTick := GetTickCount;
+    InstallStartTick := WinTickCount;
     TraysKilled := False;
     if TrayHoldsFiles then
     begin
@@ -398,8 +407,8 @@ begin
     // How long the install took; the agent reports it to the dashboard's updates report.
     ForceDirectories(ExpandConstant('{commonappdata}\ContentBlockerAgent\update'));
     SaveStringToFile(ExpandConstant('{commonappdata}\ContentBlockerAgent\update\last-install.txt'),
-      'version={#MyAppVersion}' + #13#10 + 'seconds=' + IntToStr((GetTickCount - InstallStartTick) div 1000) + #13#10, False);
-    AppendLog('Install took ' + IntToStr((GetTickCount - InstallStartTick) div 1000) + ' seconds.');
+      'version={#MyAppVersion}' + #13#10 + 'seconds=' + IntToStr(InstallSeconds) + #13#10, False);
+    AppendLog('Install took ' + IntToStr(InstallSeconds) + ' seconds.');
     if TraysKilled and WizardSilent then RelaunchTray;
   end;
 end;

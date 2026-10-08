@@ -35,6 +35,10 @@ const PROGRESS_FILE = path.join(UPDATE_DIR, 'progress.json');
 const EXIT_FILE = path.join(UPDATE_DIR, 'installer-exit.txt');
 const LAST_INSTALL_FILE = path.join(UPDATE_DIR, 'last-install.txt'); // written by setup.iss
 const STOP_FILE = path.join(UPDATE_DIR, 'last-stop.txt'); // written by the old agent when asked to stop
+// Exists while apply-update.bat is running (installer + health check). A second update must never
+// start meanwhile: it would overwrite the .bat that is executing and start a second installer.
+const INSTALLING_FLAG = path.join(UPDATE_DIR, 'installing.flag');
+const INSTALLING_MAX_MS = 20 * 60 * 1000;
 
 let busy = false;
 
@@ -177,6 +181,14 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
   try {
     if (isBusy && isBusy()) return { result: 'busy', current };
     if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return { result: 'disabled', current };
+    try {
+      const st = fs.statSync(INSTALLING_FLAG);
+      if (Date.now() - st.mtimeMs < INSTALLING_MAX_MS) {
+        logger.log('An earlier update is still being installed - not starting another one now.');
+        return { result: 'busy', current, reason: 'installing' };
+      }
+      fs.rmSync(INSTALLING_FLAG, { force: true }); // stale (the .bat died)
+    } catch (e) { /* no update running */ }
 
     let src = null;
     const auth = getAuth ? getAuth() : null;
@@ -259,17 +271,20 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
       `& sc.exe start ContentBlockerAgent | Out-Null; exit 98`;
     fs.writeFileSync(bat, [
       '@echo off',
-      `echo [updater] starting silent install of ${latest} >>"${logFile}"`,
+      `echo %date% %time% >"${INSTALLING_FLAG}"`,
+      `echo [updater] %time% task started, launching the silent installer of ${latest} >>"${logFile}"`,
       runInstaller,
       'set RC=%errorlevel%',
       // The space before ">" matters here too ("0>" would be a handle redirect).
       `echo %RC% >"${EXIT_FILE}"`,
-      `echo [updater] installer exit code %RC% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
+      `echo [updater] %time% installer exit code %RC% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
       `if "%RC%"=="0" powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${healthCheck}"`,
       `if "%errorlevel%"=="98" echo 98 >"${EXIT_FILE}"`,
       `if "%errorlevel%"=="98" echo [updater] ROLLBACK: the new version did not come up in time, the previous version was restored >>"${logFile}"`,
       `sc start ContentBlockerAgent >nul 2>&1`,
       `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
+      `echo [updater] %time% update script finished >>"${logFile}"`,
+      `del /f /q "${INSTALLING_FLAG}" >nul 2>&1`,
       `del /f /q "${exePath}" >nul 2>&1`,
       `schtasks /delete /tn ${TASK_NAME} /f >nul 2>&1`,
       ''

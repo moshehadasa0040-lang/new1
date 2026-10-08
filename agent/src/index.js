@@ -385,6 +385,12 @@ async function uploadLogs(reason) {
 async function heartbeatLoop() {
   if (uninstalling) return;
   try {
+    if (!deviceId || !deviceToken) {
+      const st = await ensureRegistered();
+      deviceId = st.deviceId;
+      deviceToken = st.deviceToken;
+      logger.log(`Registered with the server. Device ID: ${deviceId}`);
+    }
     const { unlockedUntil, commands, deviceNumber: num, latestVersion } = await api.heartbeat(deviceId, deviceToken);
     rememberDeviceNumber(num);
     if (lastHeartbeatOk !== true) {
@@ -443,7 +449,16 @@ async function heartbeatLoop() {
 
 async function main() {
   await ensureNssmExitPolicy();
-  const state = await ensureRegistered();
+  // The protection must NEVER depend on the server being reachable: if registering fails (server
+  // down, a web filter answering 418/403 ...), start protecting anyway and keep trying in the
+  // background (heartbeatLoop registers as soon as the server answers).
+  let state;
+  try {
+    state = await ensureRegistered();
+  } catch (e) {
+    logger.log(`Could not register with the server yet (${e.message}) - protection starts anyway, registration is retried in the background.`);
+    state = { deviceId: null, deviceToken: null };
+  }
   deviceId = state.deviceId;
   deviceToken = state.deviceToken;
   const version = require('../package.json').version;

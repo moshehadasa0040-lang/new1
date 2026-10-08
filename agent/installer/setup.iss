@@ -15,7 +15,7 @@
 #define MyAppName "Content Blocker Agent"
 ; The build workflow passes /DMyAppVersion=<agent/package.json version>; this is only the fallback.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.13.18"
+  #define MyAppVersion "1.13.19"
 #endif
 #define MyAppPublisher "YourNameHere"
 #define MyAppExeName "content-blocker-agent.exe"
@@ -116,6 +116,14 @@ begin
   Result := GetEnv('COMPUTERNAME');
   if Result = '' then
     Result := 'מחשב חדש';
+end;
+
+function InitializeSetup: Boolean;
+begin
+  // First line of a run: the time between the update being handed over and this line is
+  // Windows starting Setup, the time after it is Setup itself.
+  AppendLog('Setup process started (version {#MyAppVersion}).');
+  Result := True;
 end;
 
 procedure InitializeWizard;
@@ -293,6 +301,15 @@ begin
   Result := not SilentUpgrade;
 end;
 
+// Step markers: each logs a time-stamped line right before its [Run] step, so a slow step is
+// visible in the log (the time to the next line is how long the step took).
+function DefenderFg: Boolean; begin AppendLog('Step: Defender exclusions'); Result := not SilentUpgrade; end;
+function DefenderBg: Boolean; begin AppendLog('Step: Defender exclusions (background, upgrade)'); Result := SilentUpgrade; end;
+function StepStart: Boolean; begin AppendLog('Step: start service'); Result := not SilentUpgrade; end;
+function StepRestart: Boolean; begin AppendLog('Step: restart service'); Result := SilentUpgrade; end;
+function SrpFg: Boolean; begin AppendLog('Step: program restrictions (SRP)'); Result := not SilentUpgrade; end;
+function SrpBg: Boolean; begin AppendLog('Step: program restrictions (SRP, background, upgrade)'); Result := SilentUpgrade; end;
+
 // Stops the watchdog, then the service, and WAITS until the agent exe is really gone.
 procedure StopAgentForInstall;
 var
@@ -443,7 +460,8 @@ end;
 ; still sitting in Downloads before being run (only code signing fixes that,
 ; see PROJECT_STATUS.md), and it is best-effort: ignored if Tamper Protection
 ; or a managed policy blocks it.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-MpPreference -ExclusionPath '{app}'; Add-MpPreference -ExclusionPath '{commonappdata}\ContentBlockerAgent'; Add-MpPreference -ExclusionProcess '{app}\{#MyAppExeName}'"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-MpPreference -ExclusionPath '{app}'; Add-MpPreference -ExclusionPath '{commonappdata}\ContentBlockerAgent'; Add-MpPreference -ExclusionProcess '{app}\{#MyAppExeName}'"""; Flags: runhidden waituntilterminated; Check: DefenderFg
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Add-MpPreference -ExclusionPath '{app}'; Add-MpPreference -ExclusionPath '{commonappdata}\ContentBlockerAgent'; Add-MpPreference -ExclusionProcess '{app}\{#MyAppExeName}'"""; Flags: runhidden nowait; Check: DefenderBg
 
 ; Registers the packaged exe as a Windows service via NSSM. First removes
 ; any pre-existing service with the same name (ignoring errors if none
@@ -485,11 +503,12 @@ Filename: "{app}\nssm.exe"; Parameters: "set {#MyServiceName} AppRotateBytes 104
 ; the agent and closes itself when the agent finishes.
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" install-splash.ps1"; Flags: nowait runhidden skipifsilent
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--lock-files"; Flags: runhidden waituntilterminated; StatusMsg: "Locking all video files - this can take a few minutes, please wait..."; Check: IsNotSilentUpgrade
-Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."; Check: IsNotSilentUpgrade
+Filename: "{app}\nssm.exe"; Parameters: "start {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Starting service..."; Check: StepStart
 ; Automatic update of an existing install: the service was never stopped, restart it once so it runs the new files.
 ; (Video locks stay on the files; the agent re-checks all of them right after it starts.)
-Filename: "{app}\nssm.exe"; Parameters: "restart {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Restarting service..."; Check: IsSilentUpgrade
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; StatusMsg: "Applying program restrictions..."
+Filename: "{app}\nssm.exe"; Parameters: "restart {#MyServiceName}"; Flags: runhidden waituntilterminated; StatusMsg: "Restarting service..."; Check: StepRestart
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden waituntilterminated; Tasks: srp; Check: SrpFg; StatusMsg: "Applying program restrictions..."
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\srp-policy.ps1"" -Apply -BlockOtherDrives"; Flags: runhidden nowait; Tasks: srp; Check: SrpBg; StatusMsg: "Applying program restrictions..."
 ; Start the tray icon now (runasoriginaluser = the logged-in user's session, not elevated).
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\ps-hidden.vbs"" tray.ps1"; Flags: nowait runhidden runasoriginaluser skipifsilent
 

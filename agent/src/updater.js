@@ -417,6 +417,23 @@ async function reportPending(send) {
   }
 }
 
+// Text for the dashboard when an update is stuck or failed: the installer's own log tail, its
+// exit code, the update state and the leftover files. Everything here is already readable by
+// the logged-in user (no secrets).
+function getInstallerDiagnostics() {
+  const out = [];
+  const tail = (file, n) => {
+    try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join('\n'); } catch (e) { return ''; }
+  };
+  try { out.push('progress: ' + fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch (e) { /* none */ }
+  try { out.push('installer exit code: ' + fs.readFileSync(EXIT_FILE, 'utf8').trim()); } catch (e) { /* none */ }
+  try { out.push('state: ' + fs.readFileSync(STATE_FILE, 'utf8')); } catch (e) { /* none */ }
+  try { out.push('files in update dir: ' + fs.readdirSync(UPDATE_DIR).map((f) => `${f} (${fs.statSync(path.join(UPDATE_DIR, f)).size}b)`).join(', ')); } catch (e) { /* none */ }
+  const setup = tail(path.join(UPDATE_DIR, 'setup.log'), 60);
+  if (setup) out.push('--- setup.log (last 60 lines) ---\n' + setup);
+  return out.join('\n');
+}
+
 // Hebrew one-liner for the dashboard's event list ("update the agent" button).
 function describeResult(r) {
   const why = {
@@ -436,4 +453,4 @@ function describeResult(r) {
   }
 }
 
-module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending, STOP_FILE };
+module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending, getInstallerDiagnostics, STOP_FILE, UPDATE_DIR };

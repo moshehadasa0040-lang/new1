@@ -10,6 +10,13 @@ const router = express.Router();
 // seconds, the dashboard will show it as offline (checked lazily on read).
 const OFFLINE_AFTER_SECONDS = 90;
 
+// An agent that is still behind the latest release this long after it was seen behind is "stuck":
+// the server then asks it for its log by itself (no need to click anything).
+const STUCK_AFTER_MS = 10 * 60 * 1000;
+const AUTO_LOG_GAP_MS = 30 * 60 * 1000;   // not more often than this per computer
+const AUTO_LOG_MAX_PER_EPISODE = 3;       // and at most this many times per stuck update
+const SELF_UPDATE_MIN = '1.13.15';         // first agent version that updates itself from the heartbeat
+
 // POST /api/agent/register
 // Called once, the first time the agent starts on a new machine.
 // Body: { hardwareId, hostname, deviceName, agentVersion }
@@ -113,7 +120,33 @@ router.post('/heartbeat', requireDevice, async (req, res) => {
     fields.agent_version = reported;
     fields.agent_version_at = new Date().toISOString();
   }
+
+  // Stuck-update detection: behind the newest release for too long -> ask for the log automatically.
+  const latest = release.peekLatestVersion();
+  const effective = fields.agent_version || device.agent_version || '';
+  const nowMs = Date.now();
+  let autoLogs = false;
+  if (latest && effective && release.cmpVersion(effective, latest) < 0) {
+    if (!device.outdated_since) fields.outdated_since = new Date().toISOString();
+    else if (
+      release.cmpVersion(effective, SELF_UPDATE_MIN) >= 0 &&
+      nowMs - new Date(device.outdated_since).getTime() > STUCK_AFTER_MS &&
+      nowMs - (Number(device.auto_logs_ms) || 0) > AUTO_LOG_GAP_MS &&
+      (Number(device.auto_logs_count) || 0) < AUTO_LOG_MAX_PER_EPISODE
+    ) {
+      autoLogs = true;
+      fields.auto_logs_ms = String(nowMs);
+      fields.auto_logs_count = String((Number(device.auto_logs_count) || 0) + 1);
+    }
+  } else if (latest && effective && (device.outdated_since || device.auto_logs_count)) {
+    fields.outdated_since = '';
+    fields.auto_logs_count = '0';
+  }
   await store.upsertDevice(device.id, fields);
+  if (autoLogs) {
+    await store.queueCommand(device.id, 'send_logs', { reason: 'update_stuck' });
+    await store.addEvent(device.id, `העדכון ל-${latest} לא הושלם כבר יותר מ-10 דקות - נשלח אוטומטית לוג מהמחשב (יופיע בכפתור "הצג לוג")`);
+  }
 
   await store.ensureNumber(device);
   const commands = await store.drainPendingCommands(device.id);
@@ -166,8 +199,12 @@ router.post('/ack', requireDevice, async (req, res) => {
 // The agent uploads its recent local log lines here, in response to a
 // 'send_logs' command queued from the dashboard.
 router.post('/logs', requireDevice, async (req, res) => {
-  const { logs } = req.body || {};
-  await store.saveLogs(req.device.id, logs || '');
+  const { logs, reason } = req.body || {};
+  const why = ['requested', 'update_stuck', 'update_failed'].includes(reason) ? reason : 'requested';
+  await store.saveLogs(req.device.id, String(logs || '').slice(0, 300000), why);
+  if (why !== 'requested') {
+    await store.addEvent(req.device.id, why === 'update_failed' ? 'התקבל לוג אוטומטי אחרי עדכון שנכשל' : 'התקבל לוג אוטומטי מעדכון תקוע');
+  }
   res.json({ ok: true });
 });
 
@@ -194,4 +231,4 @@ router.post('/unregister', requireDevice, async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, OFFLINE_AFTER_SECONDS };
+module.exports = { router, OFFLINE_AFTER_SECONDS, STUCK_AFTER_MS };

@@ -44,8 +44,8 @@ async function updateReport(deviceId, deviceToken, report) {
   await client(deviceId, deviceToken).post('/api/agent/update-report', report);
 }
 
-async function sendLogs(deviceId, deviceToken, logs) {
-  await client(deviceId, deviceToken).post('/api/agent/logs', { logs });
+async function sendLogs(deviceId, deviceToken, logs, reason) {
+  await client(deviceId, deviceToken).post('/api/agent/logs', { logs, reason: reason || 'requested' });
 }
 
 async function unregister(deviceId, deviceToken, summary) {

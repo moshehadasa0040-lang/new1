@@ -185,9 +185,26 @@ async function addRemoval(entry) {
   await redis.ltrim('removed_devices', 0, 29);
 }
 
+const REMOVAL_KEEP_DAYS = 30;
+
 async function listRemovals() {
   const raw = await redis.lrange('removed_devices', 0, 29);
-  return raw.map((e) => JSON.parse(e));
+  return raw.map((e) => { try { return JSON.parse(e); } catch (err) { return null; } }).filter(Boolean);
+}
+
+// Deletes ONE entry of the "removed recently" list (identified by its removed_at stamp).
+async function deleteRemoval(removedAt) {
+  const raw = await redis.lrange('removed_devices', 0, -1);
+  let n = 0;
+  for (const e of raw) {
+    let o; try { o = JSON.parse(e); } catch (err) { o = null; }
+    if (!o || o.removed_at === removedAt) { await redis.lrem('removed_devices', 1, e); n += 1; }
+  }
+  return n;
+}
+
+async function clearRemovals() {
+  await redis.del('removed_devices');
 }
 
 // --- Logs --------------------------------------------------------------------
@@ -195,17 +212,50 @@ async function listRemovals() {
 // so we just keep the single most recent upload per device rather than a
 // growing history.
 
-async function saveLogs(deviceId, content) {
-  await redis.hset(`device:${deviceId}:logs`, {
-    content,
-    updated_at: new Date().toISOString()
-  });
+const LOG_KEEP_SECONDS = 7 * 24 * 60 * 60; // an uploaded log disappears by itself after 7 days
+
+async function saveLogs(deviceId, content, reason = 'requested') {
+  const key = `device:${deviceId}:logs`;
+  const at = new Date().toISOString();
+  await redis.hset(key, { content, reason, updated_at: at });
+  await redis.expire(key, LOG_KEEP_SECONDS);
+  // Small markers on the device card (the log itself is only read on demand).
+  if (await redis.exists(deviceKey(deviceId))) {
+    await redis.hset(deviceKey(deviceId), { logs_at: at, logs_reason: reason });
+  }
 }
 
 async function getLogs(deviceId) {
   const data = await redis.hgetall(`device:${deviceId}:logs`);
   if (!data || !data.content) return null;
   return data;
+}
+
+async function deleteLogs(deviceId) {
+  await redis.del(`device:${deviceId}:logs`);
+  if (await redis.exists(deviceKey(deviceId))) await redis.hset(deviceKey(deviceId), { logs_at: '', logs_reason: '' });
+}
+
+async function deleteAllLogs() {
+  const ids = await redis.smembers('devices:index');
+  for (const id of ids) await deleteLogs(id);
+  return ids.length;
+}
+
+// Periodic housekeeping (see index.js): nothing may grow forever.
+async function cleanup() {
+  const ids = await redis.smembers('devices:index');
+  for (const id of ids) {
+    const lk = `device:${id}:logs`;
+    if ((await redis.exists(lk)) && (await redis.ttl(lk)) === -1) await redis.expire(lk, LOG_KEEP_SECONDS);
+    // marker on the card but the log itself already expired
+    const d = await redis.hgetall(deviceKey(id));
+    if (d && d.logs_at && !(await redis.exists(lk))) await redis.hset(deviceKey(id), { logs_at: '', logs_reason: '' });
+  }
+  const cutoff = Date.now() - REMOVAL_KEEP_DAYS * 24 * 60 * 60 * 1000;
+  for (const r of await listRemovals()) {
+    if (r.removed_at && new Date(r.removed_at).getTime() < cutoff) await deleteRemoval(r.removed_at);
+  }
 }
 
 module.exports = {
@@ -223,6 +273,11 @@ module.exports = {
   listEvents,
   saveLogs,
   getLogs,
+  deleteLogs,
+  deleteAllLogs,
+  cleanup,
   addRemoval,
-  listRemovals
+  listRemovals,
+  deleteRemoval,
+  clearRemovals
 };

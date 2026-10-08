@@ -4,7 +4,7 @@ const config = require('./config');
 
 const LOG_FILE = path.join(config.LOG_DIR, 'agent.log');
 const LOG_FILE_OLD = path.join(config.LOG_DIR, 'agent.old.log');
-const MAX_LOG_BYTES = 2 * 1024 * 1024; // 2MB - rotation trigger
+const MAX_LOG_BYTES = 1024 * 1024; // 1MB - rotation trigger
 
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}\n`;

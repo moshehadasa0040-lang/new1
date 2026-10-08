@@ -41,6 +41,11 @@ async function start() {
   // Confirms the Aiven Redis/Valkey connection works before accepting traffic.
   await redis.ping();
   app.listen(PORT, () => console.log(`Dashboard server listening on port ${PORT}`));
+  // Housekeeping: logs expire after 7 days, the "removed recently" list after 30.
+  const store = require('./store');
+  const tidy = () => store.cleanup().catch((e) => console.error('cleanup failed:', e.message));
+  setTimeout(tidy, 30 * 1000);
+  setInterval(tidy, 60 * 60 * 1000);
 }
 
 start().catch((err) => {

@@ -176,3 +176,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .report-table th { background: #f7f6f2; position: sticky; top: 0; }
 .report-scroll { overflow: auto; flex: 1; margin: 8px 0 12px; }
 .report-stats { font-size: 14px; line-height: 1.7; }
+
+.small-btn { font-size: 12px; padding: 3px 10px; margin-right: 10px; }
+.removed-item .removed-del { float: left; font-size: 12px; padding: 2px 10px; }
+.status-stuck { background: #fdecea; color: #c0392b; }
+.logs-note { font-size: 12px; color: #8a5a00; background: #fff4d6; border-radius: 6px; padding: 1px 8px; margin-right: 6px; }

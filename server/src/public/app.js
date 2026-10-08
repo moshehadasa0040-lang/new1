@@ -118,6 +118,18 @@ document.getElementById('login-btn').addEventListener('click', async () => {
 
 document.getElementById('updates-report-btn').addEventListener('click', openUpdatesReport);
 
+document.getElementById('clear-logs-btn').addEventListener('click', () => runAction(async () => {
+  if (!confirm('למחוק את כל הלוגים ששמורים בשרת, מכל המחשבים?\n(הלוגים במחשבים עצמם לא נמחקים, והם נמחקים בכל מקרה מעצמם אחרי 7 ימים)')) return;
+  await api('/api/admin/logs', { method: 'DELETE' });
+  await loadDevices();
+}));
+
+document.getElementById('clear-removed-btn').addEventListener('click', () => runAction(async () => {
+  if (!confirm('לנקות את כל הרשימה \"הוסרו לאחרונה\"?')) return;
+  await api('/api/admin/removed', { method: 'DELETE' });
+  loadRemoved();
+}));
+
 document.getElementById('update-all-btn').addEventListener('click', () => runAction(async () => {
   if (!confirm('לשלוח בקשת עדכון לכל המחשבים המחוברים שאינם עדכניים?\nהם יתעדכנו בהפרש של כמה שניות זה מזה, ובכל אחד השירות יופעל מחדש לשניות ספורות.')) return;
   const r = await api('/api/admin/devices/update-outdated', { method: 'POST' });
@@ -156,9 +168,14 @@ async function loadRemoved() {
       return `<div class="removed-item ${bad ? 'removed-bad' : ''}">
         <strong>${escapeHtml(String(r.number || '?'))} · ${escapeHtml(r.name || r.hostname || '')}</strong>
         <span>${new Date(r.removed_at).toLocaleString('he-IL')}</span>
+        <button class="removed-del secondary" data-at="${escapeHtml(r.removed_at)}">מחק</button>
         <div>${escapeHtml(r.summary || 'לא דווח סיכום')}</div>
       </div>`;
     }).join('');
+    list.querySelectorAll('.removed-del').forEach((b) => b.addEventListener('click', () => runAction(async () => {
+      await api(`/api/admin/removed?at=${encodeURIComponent(b.dataset.at)}`, { method: 'DELETE' });
+      loadRemoved();
+    })));
   } catch (e) {
     // the list is informational - ignore failures
   }
@@ -262,6 +279,7 @@ function renderDevices(allDevices) {
             <span class="status-dot"></span>${isOnline ? 'מחובר' : 'מנותק'}
           </span>
           ${isUnlocked ? '<span class="status-badge status-unlocked">פתוח זמנית</span>' : ''}
+          ${d.update_stuck ? '<span class="status-badge status-stuck" title="המחשב לא התעדכן כבר יותר מ-10 דקות. נשלח אליו לוג אוטומטית.">העדכון תקוע</span>' : ''}
         </div>
         <div class="device-actions">
           <button class="unlock-btn">פתח ל-15 דק'</button>
@@ -272,7 +290,9 @@ function renderDevices(allDevices) {
           <button class="status-btn">בדיקת מצב מיידית</button>
           <button class="events-btn secondary">אירועים והתראות</button>
           <button class="logs-btn secondary">בקש לוגים</button>
+          <button class="view-logs-btn secondary">הצג לוג${d.logs_at ? ' (' + (d.logs_reason && d.logs_reason !== 'requested' ? 'אוטומטי · ' : '') + new Date(d.logs_at).toLocaleString('he-IL') + ')' : ''}</button>
           <button class="download-logs-btn secondary">הורד לוגים</button>
+          <button class="delete-logs-btn secondary">מחק לוג</button>
           <button class="uninstall-btn danger">הסר תוכנה</button>
           <button class="remove-btn secondary">מחק מהדשבורד</button>
         </div>
@@ -337,6 +357,19 @@ function renderDevices(allDevices) {
     card.querySelector('.logs-btn')?.addEventListener('click', () => runAction(async () => {
       await api(`/api/admin/devices/${id}/request-logs`, { method: 'POST' });
       alert('בקשת לוגים נשלחה. המתן כדקה, ואז לחץ "הורד לוגים".');
+    }));
+    card.querySelector('.view-logs-btn')?.addEventListener('click', () => runAction(async () => {
+      const { logs } = await api(`/api/admin/devices/${id}/logs`);
+      if (!logs || !logs.content) { alert('אין לוג שמור למחשב הזה. לחץ \"בקש לוגים\" והמתן כדקה.'); return; }
+      const why = logs.reason === 'update_stuck' ? 'נשלח אוטומטית: העדכון תקוע' : logs.reason === 'update_failed' ? 'נשלח אוטומטית: העדכון נכשל' : 'לפי בקשה';
+      const dev = lastDevices.find((x) => x.id === id);
+      const modal = openModal(`לוג - ${dev ? dev.name : id}`, logs.content);
+      modal.setStatus(`${why} · התקבל ${new Date(logs.updated_at).toLocaleString('he-IL')}`);
+    }));
+    card.querySelector('.delete-logs-btn')?.addEventListener('click', () => runAction(async () => {
+      if (!confirm('למחוק את הלוג השמור של המחשב הזה מהשרת?')) return;
+      await api(`/api/admin/devices/${id}/logs`, { method: 'DELETE' });
+      await loadDevices();
     }));
     card.querySelector('.download-logs-btn')?.addEventListener('click', () => runAction(async () => {
       const { logs } = await api(`/api/admin/devices/${id}/logs`);

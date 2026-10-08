@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const store = require('../store');
 const { requireAdmin } = require('../auth');
-const { OFFLINE_AFTER_SECONDS } = require('./agent');
+const { OFFLINE_AFTER_SECONDS, STUCK_AFTER_MS } = require('./agent');
 const release = require('../release');
 
 const router = express.Router();
@@ -63,7 +63,12 @@ router.get('/devices', requireAdmin, async (req, res) => {
     const lastSeenMs = d.last_seen ? new Date(d.last_seen).getTime() : 0;
     const staleFor = (now - lastSeenMs) / 1000;
     const status = staleFor > OFFLINE_AFTER_SECONDS ? 'offline' : d.status;
-    return { ...d, status };
+    // "Stuck in an update": behind the latest release for over 10 minutes although the computer
+    // was seen recently (a computer that is simply off for days is not "stuck").
+    const behindMs = d.outdated_since ? now - new Date(d.outdated_since).getTime() : 0;
+    const update_stuck = behindMs > STUCK_AFTER_MS && staleFor < 60 * 60;
+    const logs_fresh = d.logs_at && now - new Date(d.logs_at).getTime() < 7 * 24 * 60 * 60 * 1000;
+    return { ...d, status, update_stuck, logs_at: logs_fresh ? d.logs_at : '' };
   });
   res.json({ devices });
 });
@@ -153,6 +158,14 @@ router.get('/removed', requireAdmin, async (req, res) => {
   res.json({ removed: await store.listRemovals() });
 });
 
+// Delete one entry ("removed recently") or the whole list.
+router.delete('/removed', requireAdmin, async (req, res) => {
+  const at = req.query.at;
+  if (at) await store.deleteRemoval(String(at));
+  else await store.clearRemovals();
+  res.json({ ok: true });
+});
+
 router.get('/devices/:id/events', requireAdmin, async (req, res) => {
   const events = await store.listEvents(req.params.id);
   res.json({ events });
@@ -207,6 +220,15 @@ router.post('/devices/:id/request-logs', requireAdmin, async (req, res) => {
 router.get('/devices/:id/logs', requireAdmin, async (req, res) => {
   const logs = await store.getLogs(req.params.id);
   res.json({ logs });
+});
+
+router.delete('/devices/:id/logs', requireAdmin, async (req, res) => {
+  await store.deleteLogs(req.params.id);
+  res.json({ ok: true });
+});
+
+router.delete('/logs', requireAdmin, async (req, res) => {
+  res.json({ ok: true, devices: await store.deleteAllLogs() });
 });
 
 // --- Update blocked process list --------------------------------------------

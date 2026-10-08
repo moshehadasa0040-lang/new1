@@ -15,6 +15,7 @@ const fileLock = require('./fileLock');
 const watcher = require('./watcher');
 const alerts = require('./alerts');
 const updater = require('./updater');
+const maintenance = require('./maintenance');
 const defender = require('./defender');
 const health = require('./health');
 const logger = require('./logger');
@@ -251,13 +252,7 @@ async function applyCommand(cmd) {
       }
       break;
     case 'send_logs':
-      try {
-        const status = await health.collect().catch((e) => `בדיקת המצב נכשלה: ${e.message}`);
-        const recentLogs = `${status}\n\n=== לוג אחרון ===\n${logger.getRecent(500)}`;
-        await api.sendLogs(deviceId, deviceToken, recentLogs);
-      } catch (err) {
-        logger.log(`Failed to upload logs: ${err.message}`);
-      }
+      await uploadLogs((cmd.payload && cmd.payload.reason) || 'requested');
       break;
     case 'update': {
       // "Update agent" button in the dashboard. Runs in the background: a download can
@@ -369,7 +364,23 @@ function maybeAutoUpdate(latestVersion) {
   setTimeout(() => runAutoUpdate(latestVersion), delayMs);
 }
 
+let lastFailedUploadKey = '';
 const getAuth = () => ({ deviceId, deviceToken });
+
+// Uploads health report + recent log (+ the installer's own log, which is where an update that
+// got stuck usually explains itself). reason: requested | update_stuck | update_failed.
+async function uploadLogs(reason) {
+  try {
+    const status = await health.collect().catch((e) => `בדיקת המצב נכשלה: ${e.message}`);
+    let text = `${status}\n\n=== לוג אחרון ===\n${logger.getRecent(500)}`;
+    const extra = updater.getInstallerDiagnostics();
+    if (extra) text += `\n\n=== אבחון עדכון ===\n${extra}`;
+    await api.sendLogs(deviceId, deviceToken, text, reason);
+    logger.log(`Log uploaded to the dashboard (${reason}).`);
+  } catch (err) {
+    logger.log(`Failed to upload logs: ${err.message}`);
+  }
+}
 
 async function heartbeatLoop() {
   if (uninstalling) return;
@@ -514,7 +525,15 @@ async function main() {
   // Self-update from the latest GitHub Release (see updater.js).
   updater.start({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth });
   // Update report for the dashboard (how long the last update took / why it failed).
-  const sendUpdateReport = (rep) => api.updateReport(deviceId, deviceToken, rep);
+  const sendUpdateReport = async (rep) => {
+    // A failed update uploads the log by itself - nobody has to ask for it.
+    if (rep && rep.result === 'failed') {
+      const key = `${rep.to}|${rep.error}`;
+      if (key !== lastFailedUploadKey) { lastFailedUploadKey = key; await uploadLogs('update_failed'); }
+    }
+    await api.updateReport(deviceId, deviceToken, rep);
+  };
+  maintenance.start();
   setTimeout(() => updater.reportPending(sendUpdateReport).catch(() => {}), 5 * 1000);
   setInterval(() => { if (!uninstalling) updater.reportPending(sendUpdateReport).catch(() => {}); }, 60 * 1000);
   // Keeps `updated` fresh so the tray icon can tell the service is alive.

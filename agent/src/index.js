@@ -340,15 +340,33 @@ async function applyCommand(cmd) {
 // computer room over a minute instead of all downloading in the same second; the
 // "Update agent" button in the dashboard skips it.
 let autoUpdateSeen = '';
+let autoUpdateRetries = 0;
+let autoUpdateTimer = null;
+const AUTO_UPDATE_MAX_RETRIES = 8;       // then the regular 30-minute check takes over
+const AUTO_UPDATE_RETRY_MS = 90 * 1000;  // release published but installer not uploaded yet, computer busy, short network error...
+
+function runAutoUpdate(latestVersion) {
+  updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth })
+    .then((r) => {
+      // Finished for good: update started, nothing to do, or switched off on purpose.
+      if (!r || ['updating', 'uptodate', 'disabled', 'skipped'].includes(r.result)) { autoUpdateRetries = 0; return; }
+      if (uninstalling || autoUpdateRetries >= AUTO_UPDATE_MAX_RETRIES) return;
+      autoUpdateRetries += 1;
+      logger.log(`Auto-update to ${latestVersion} not done yet (${r.result}${r.message ? ': ' + r.message : ''}) - retry ${autoUpdateRetries}/${AUTO_UPDATE_MAX_RETRIES} in ${AUTO_UPDATE_RETRY_MS / 1000}s.`);
+      clearTimeout(autoUpdateTimer);
+      autoUpdateTimer = setTimeout(() => runAutoUpdate(latestVersion), AUTO_UPDATE_RETRY_MS);
+    })
+    .catch(() => {});
+}
+
 function maybeAutoUpdate(latestVersion) {
   if (!latestVersion || uninstalling || latestVersion === autoUpdateSeen) return;
   if (!updater.isNewer(latestVersion, require('../package.json').version)) return;
-  autoUpdateSeen = latestVersion; // once per version; failures are retried by the 30-minute check
+  autoUpdateSeen = latestVersion; // once per version; failures are retried above, then by the 30-minute check
+  autoUpdateRetries = 0;
   const delayMs = Math.floor(Math.random() * 45 * 1000);
   logger.log(`Server reports version ${latestVersion} - checking for the update in ${Math.round(delayMs / 1000)}s.`);
-  setTimeout(() => {
-    updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth }).catch(() => {});
-  }, delayMs);
+  setTimeout(() => runAutoUpdate(latestVersion), delayMs);
 }
 
 const getAuth = () => ({ deviceId, deviceToken });

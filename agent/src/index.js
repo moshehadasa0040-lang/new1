@@ -252,7 +252,10 @@ async function applyCommand(cmd) {
       }
       break;
     case 'send_logs':
-      await uploadLogs((cmd.payload && cmd.payload.reason) || 'requested');
+      {
+      const why = (cmd.payload && cmd.payload.reason) || 'requested';
+      await uploadLogs(why, why === 'requested' ? null : updater.getProgressStart());
+    }
       break;
     case 'update': {
       // "Update agent" button in the dashboard. Runs in the background: a download can
@@ -369,10 +372,16 @@ const getAuth = () => ({ deviceId, deviceToken });
 
 // Uploads health report + recent log (+ the installer's own log, which is where an update that
 // got stuck usually explains itself). reason: requested | update_stuck | update_failed.
-async function uploadLogs(reason) {
+async function uploadLogs(reason, sinceMs) {
   try {
+    // For an update problem only the log of THAT attempt matters: from 10 minutes before it started
+    // (or the last 3 hours if we do not know) - not a whole day of unrelated lines.
+    let since = sinceMs ? sinceMs - 10 * 60 * 1000 : null;
+    if (reason !== 'requested' && !since) since = Date.now() - 3 * 3600 * 1000;
     const status = await health.collect().catch((e) => `בדיקת המצב נכשלה: ${e.message}`);
-    let text = `${status}\n\n=== לוג אחרון (24 שעות, בלי רעש) ===\n${logger.getRecent(150)}`;
+    const when = `הלוג נוצר בשעון המחשב: ${logger.fmtLocal(Date.now())} (UTC ${new Date().toISOString().slice(0, 19).replace('T', ' ')})`;
+    const scope = since ? `מ-${logger.fmtLocal(since)} ואילך (סביב ניסיון העדכון)` : '24 שעות אחרונות';
+    let text = `${when}\n${status}\n\n=== לוג אחרון - ${scope}, בלי רעש ===\n${logger.getRecent(150, 24, since)}`;
     const extra = updater.getInstallerDiagnostics(reason !== 'requested');
     if (extra) text += `\n\n=== אבחון עדכון ===\n${extra}`;
     await api.sendLogs(deviceId, deviceToken, text, reason);
@@ -544,7 +553,7 @@ async function main() {
     // A failed update uploads the log by itself - nobody has to ask for it.
     if (rep && rep.result === 'failed') {
       const key = `${rep.to}|${rep.error}`;
-      if (key !== lastFailedUploadKey) { lastFailedUploadKey = key; await uploadLogs('update_failed'); }
+      if (key !== lastFailedUploadKey) { lastFailedUploadKey = key; await uploadLogs('update_failed', rep.startedAtMs); }
     }
     await api.updateReport(deviceId, deviceToken, rep);
   };

@@ -208,7 +208,7 @@ router.post('/logs', requireDevice, async (req, res) => {
   const why = ['requested', 'update_stuck', 'update_failed'].includes(reason) ? reason : 'requested';
   // Every log starts with WHO it is from, so a pasted log can always be matched to its computer.
   const d = req.device;
-  const header = `##### מחשב מספר ${d.number || '?'} | שם בדשבורד: ${d.name || '-'} | שם ברשת: ${d.hostname || '-'} | מזהה: ${String(d.id || '').slice(0, 8)} | גרסת סוכן: ${d.agent_version || '-'} #####\n\n`;
+  const header = `##### מחשב מספר ${d.number || '?'} | שם בדשבורד: ${d.name || '-'} | שם ברשת: ${d.hostname || '-'} | מזהה: ${String(d.id || '').slice(0, 8)} | גרסת סוכן: ${d.agent_version || '-'} | התקבל בשרת: ${new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })} (שעון ישראל) #####\n\n`;
   await store.saveLogs(req.device.id, header + String(logs || '').slice(0, 100000), why);
   if (why !== 'requested') {
     await store.addEvent(req.device.id, why === 'update_failed' ? 'התקבל לוג אוטומטי אחרי עדכון שנכשל' : 'התקבל לוג אוטומטי מעדכון תקוע');

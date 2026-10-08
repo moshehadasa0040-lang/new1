@@ -46,14 +46,23 @@ function lineTime(l) {
   return null;
 }
 
-function getRecent(maxLines = 150, hours = 24) {
+const pad = (n) => String(n).padStart(2, '0');
+// Computer's own clock: 08.10.2026 11:25:47 (the same clock the installer lines use)
+function fmtLocal(ms) {
+  const d = new Date(ms);
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+const fmtShort = (ms) => fmtLocal(ms).replace(/^(\d\d\.\d\d)\.\d{4} /, '$1 ');
+
+// sinceMs: only lines from this moment on (used for update problems: from just before the attempt).
+function getRecent(maxLines = 150, hours = 24, sinceMs = null) {
   try {
     if (!fs.existsSync(LOG_FILE)) return '(no log file yet)';
     let lines = fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean);
     if (lines.length < maxLines * 3 && fs.existsSync(LOG_FILE_OLD)) {
       lines = fs.readFileSync(LOG_FILE_OLD, 'utf8').split('\n').filter(Boolean).concat(lines);
     }
-    const cutoff = Date.now() - hours * 3600 * 1000;
+    const cutoff = sinceMs || Date.now() - hours * 3600 * 1000;
     let omitted = 0;
     let last = Date.now();
     const groups = new Map();   // folded text -> { line, count, firstTs, lastTs }
@@ -72,15 +81,20 @@ function getRecent(maxLines = 150, hours = 24) {
         groups.set(key, rec); order.push(rec);
       }
     }
-    const hhmm = (ts) => new Date(ts).toISOString().slice(11, 16) + 'Z';
-    let out = order.map((g) => (g.count > 1 ? `${g.line}  (x${g.count}, ${hhmm(g.firstTs)}-${hhmm(g.lastTs)})` : g.line));
+    // Show every timestamp in the computer's local time as [DD.MM HH:MM:SS].
+    const localize = (l) => l
+      .replace(/^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\]/, (m, iso) => `[${fmtShort(new Date(iso).getTime())}]`)
+      .replace(/^\[(\d{4})-(\d\d)-(\d\d) (\d\d:\d\d:\d\d)\] installer:/, '[$3.$2 $4] installer:');
+    const hhmm = (ts) => fmtShort(ts).slice(6);
+    let out = order.map((g) => (g.count > 1 ? `${localize(g.line)}  (x${g.count}, ${hhmm(g.firstTs)}-${hhmm(g.lastTs)})` : localize(g.line)));
     out = out.slice(-maxLines);
     let text = out.join('\n');
     if (text.length > 40000) text = text.slice(-40000);
-    return (omitted ? `(${omitted} routine/old lines omitted - last ${hours}h shown)\n` : '') + text;
+    const scope = sinceMs ? `from ${fmtLocal(sinceMs)}` : `last ${hours}h`;
+    return (omitted ? `(${omitted} routine/old lines omitted - ${scope} shown)\n` : '') + text;
   } catch (e) {
     return `(could not read log: ${e.message})`;
   }
 }
 
-module.exports = { log, getRecent, LOG_FILE };
+module.exports = { log, getRecent, fmtLocal, LOG_FILE };

@@ -310,18 +310,18 @@ async function checkOnce({ isBusy, notify, manual = false, retry = false, onProg
       `mkdir "${INSTALLING_LOCK}" 2>nul`,
       'if errorlevel 1 exit /b 0',
       `echo %date% %time% >"${INSTALLING_LOCK}\\started.txt"`,
-      `echo [updater] %time% task started, launching the silent installer of ${latest} >>"${logFile}"`,
+      `echo [updater] %date% %time% task started, launching the silent installer of ${latest} >>"${logFile}"`,
       runInstaller,
       'set RC=%errorlevel%',
       // The space before ">" matters here too ("0>" would be a handle redirect).
       `echo %RC% >"${EXIT_FILE}"`,
-      `echo [updater] %time% installer exit code %RC% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
+      `echo [updater] %date% %time% installer exit code %RC% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
       `if "%RC%"=="0" powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${healthCheck}"`,
       `if "%errorlevel%"=="98" echo 98 >"${EXIT_FILE}"`,
-      `if "%errorlevel%"=="98" echo [updater] ROLLBACK: the new version did not come up in time, the previous version was restored >>"${logFile}"`,
+      `if "%errorlevel%"=="98" echo [updater] %date% %time% ROLLBACK: the new version did not come up in time, the previous version was restored >>"${logFile}"`,
       `sc start ContentBlockerAgent >nul 2>&1`,
       `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
-      `echo [updater] %time% update script finished >>"${logFile}"`,
+      `echo [updater] %date% %time% update script finished >>"${logFile}"`,
       `rmdir /s /q "${INSTALLING_LOCK}" >nul 2>&1`,
       `del /f /q "${exePath}" >nul 2>&1`,
       `schtasks /delete /tn ${TASK_NAME} /f >nul 2>&1`,
@@ -463,6 +463,7 @@ async function reportPending(send) {
     } catch (e) { /* no stamp */ }
   }
   try {
+    if (rec && rec.requestedAt) out.startedAtMs = rec.requestedAt; // lets the agent send only the log of THIS attempt
     await send(out);
     try { fs.rmSync(STOP_FILE, { force: true }); } catch (e) { /* ignore */ }
     [PROGRESS_FILE, EXIT_FILE, LAST_INSTALL_FILE].forEach((f) => { try { fs.rmSync(f, { force: true }); } catch (e) { /* ignore */ } });
@@ -474,6 +475,10 @@ async function reportPending(send) {
 // Text for the dashboard when an update is stuck or failed: the installer's own log tail, its
 // exit code, the update state and the leftover files. Everything here is already readable by
 // the logged-in user (no secrets).
+function getProgressStart() {
+  try { return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')).requestedAt || null; } catch (e) { return null; }
+}
+
 function getInstallerDiagnostics(force) {
   const out = [];
   const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return ''; } };
@@ -481,7 +486,14 @@ function getInstallerDiagnostics(force) {
   const state = read(STATE_FILE);
   // Nothing in progress and nobody asked specifically about an update: send nothing extra.
   if (!progress && !force) return '';
-  if (progress) out.push('progress: ' + progress);
+  if (progress) {
+    try {
+      const pr = JSON.parse(progress);
+      const t = (ms) => (ms ? logger.fmtLocal(ms) : '-');
+      out.push(`עדכון ${pr.from} -> ${pr.to} (${pr.trigger === 'dashboard' ? 'מהדשבורד' : 'אוטומטי'})`);
+      out.push(`  התבקש: ${t(pr.requestedAt)} | הורדה התחילה: ${t(pr.downloadStartedAt)} | הועבר להתקנה: ${t(pr.installStartedAt)} | נכשל/הסתיים: ${t(pr.finishedAt)}${pr.error ? ' | שגיאה: ' + pr.error : ''}`);
+    } catch (e) { out.push('progress: ' + progress); }
+  }
   const exit = read(EXIT_FILE).trim();
   if (exit) out.push('installer exit code: ' + exit);
   if (state) out.push('state: ' + state);
@@ -494,7 +506,12 @@ function getInstallerDiagnostics(force) {
   const setup = read(path.join(UPDATE_DIR, 'setup.log')).split(/\r?\n/).filter(Boolean);
   const important = setup.filter((l) => keep.test(l)).slice(-15);
   const tail = setup.slice(-6);
-  if (setup.length) out.push('--- setup.log (important lines + last 6) ---\n' + important.concat(tail.filter((l) => !important.includes(l))).join('\n'));
+  let setupAt = '';
+  try { setupAt = logger.fmtLocal(fs.statSync(path.join(UPDATE_DIR, 'setup.log')).mtimeMs); } catch (e) { /* none */ }
+  if (setup.length) {
+    const lines = important.concat(tail.filter((l) => !important.includes(l)));
+    out.push(`--- setup.log (עודכן לאחרונה ${setupAt}; שורות חשובות + 6 אחרונות) ---\n${lines.join('\n')}`);
+  }
   return out.join('\n');
 }
 
@@ -517,4 +534,4 @@ function describeResult(r) {
   }
 }
 
-module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending, getInstallerDiagnostics, STOP_FILE, UPDATE_DIR };
+module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending, getInstallerDiagnostics, getProgressStart, STOP_FILE, UPDATE_DIR };

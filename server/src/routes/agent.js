@@ -126,9 +126,14 @@ router.post('/heartbeat', requireDevice, async (req, res) => {
   const effective = fields.agent_version || device.agent_version || '';
   const nowMs = Date.now();
   let autoLogs = false;
+  // A computer that was unreachable for a while (night-time network block, switched off) gets a fresh
+  // start: the time it was away must not count as "stuck", it has not even had a chance to update yet.
+  const awayMs = device.last_seen ? nowMs - new Date(device.last_seen).getTime() : 0;
   if (latest && effective && release.cmpVersion(effective, latest) < 0) {
-    if (!device.outdated_since) fields.outdated_since = new Date().toISOString();
-    else if (
+    if (!device.outdated_since || awayMs > 5 * 60 * 1000) {
+      fields.outdated_since = new Date().toISOString();
+      fields.auto_logs_count = '0';
+    } else if (
       release.cmpVersion(effective, SELF_UPDATE_MIN) >= 0 &&
       nowMs - new Date(device.outdated_since).getTime() > STUCK_AFTER_MS &&
       nowMs - (Number(device.auto_logs_ms) || 0) > AUTO_LOG_GAP_MS &&

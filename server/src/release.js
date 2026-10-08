@@ -1,7 +1,12 @@
 // Looks up the newest published agent release on GitHub (cached) and streams
 // its installer, so the dashboard can show "latest version" and offer a
 // download without the admin having to open GitHub.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const REPO = process.env.GITHUB_REPO || 'moshehadasa0040-lang/new1';
 const ASSET = 'ContentBlockerAgent-Setup.exe';
@@ -42,7 +47,11 @@ async function getLatest({ force = false } = {}) {
       assetUrl: asset ? asset.url : '',
       sha256
     };
+    const isNew = !cache || cache.info.version !== version;
     cache = { at: Date.now(), info };
+    // A new release: fetch the installer ONCE now, so the computers get it from this server's disk
+    // and not (each) from GitHub - GitHub rate limits were the cause of "502" download failures.
+    if (isNew && info.assetUrl && info.sha256) ensureInstallerFile(info).catch((e) => console.error('installer prefetch failed:', e.message));
     return info;
   } catch (e) {
     if (cache) return cache.info; // better a slightly old answer than none
@@ -57,20 +66,53 @@ function peekLatestVersion() {
   return cache ? cache.info.version : '';
 }
 
-// Pipes the installer of the latest release into the HTTP response.
+// The installer lives on this server's disk after the first download: every computer is then served
+// from here, GitHub is asked once per release (not once per computer, retry and click).
+const CACHE_DIR = path.join(os.tmpdir(), 'cb-installer-cache');
+const inflight = new Map();
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(file).on('data', (d) => h.update(d)).on('end', () => resolve(h.digest('hex'))).on('error', reject);
+  });
+}
+
+function ensureInstallerFile(info) {
+  const file = path.join(CACHE_DIR, `ContentBlockerAgent-Setup-${info.version}.exe`);
+  try { if (info.size && fs.statSync(file).size === info.size) return Promise.resolve(file); } catch (e) { /* not cached yet */ }
+  if (inflight.has(info.version)) return inflight.get(info.version);
+  const p = (async () => {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    const tmp = `${file}.part-${process.pid}`;
+    const r = await fetch(info.assetUrl, {
+      headers: ghHeaders({ Accept: 'application/octet-stream' }),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(180000)
+    });
+    if (!r.ok || !r.body) throw new Error(`github_${r.status}`);
+    await pipeline(Readable.fromWeb(r.body), fs.createWriteStream(tmp));
+    const okSize = !info.size || fs.statSync(tmp).size === info.size;
+    const okHash = !info.sha256 || (await sha256File(tmp)) === info.sha256;
+    if (!okSize || !okHash) { fs.rmSync(tmp, { force: true }); throw new Error('installer_verification_failed'); }
+    fs.renameSync(tmp, file);
+    // keep only the newest one on disk
+    for (const f of fs.readdirSync(CACHE_DIR)) if (f !== path.basename(file)) fs.rmSync(path.join(CACHE_DIR, f), { force: true });
+    return file;
+  })().finally(() => inflight.delete(info.version));
+  inflight.set(info.version, p);
+  return p;
+}
+
+// Sends the installer of the latest release (from the disk cache; downloads it first if needed).
 async function streamInstaller(res) {
   const info = await getLatest();
   if (!info.assetUrl) throw new Error('no_installer_in_release');
-  const r = await fetch(info.assetUrl, {
-    headers: ghHeaders({ Accept: 'application/octet-stream' }),
-    redirect: 'follow'
-  });
-  if (!r.ok || !r.body) throw new Error(`github_${r.status}`);
+  const file = await ensureInstallerFile(info);
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="ContentBlockerAgent-Setup-${info.version}.exe"`);
-  const len = r.headers.get('content-length');
-  if (len) res.setHeader('Content-Length', len);
-  Readable.fromWeb(r.body).pipe(res);
+  res.setHeader('Content-Length', String(fs.statSync(file).size));
+  await pipeline(fs.createReadStream(file), res);
 }
 
 // "1.13.10" > "1.13.9": numeric, part by part.

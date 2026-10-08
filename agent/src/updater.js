@@ -37,7 +37,8 @@ const LAST_INSTALL_FILE = path.join(UPDATE_DIR, 'last-install.txt'); // written 
 const STOP_FILE = path.join(UPDATE_DIR, 'last-stop.txt'); // written by the old agent when asked to stop
 // Exists while apply-update.bat is running (installer + health check). A second update must never
 // start meanwhile: it would overwrite the .bat that is executing and start a second installer.
-const INSTALLING_FLAG = path.join(UPDATE_DIR, 'installing.flag');
+const INSTALLING_LOCK = path.join(UPDATE_DIR, 'installing.lock'); // a folder: mkdir is atomic, so only ONE copy of the script can ever run
+const LAUNCH_PS1 = path.join(UPDATE_DIR, 'launch-update.ps1');
 const INSTALLING_MAX_MS = 20 * 60 * 1000;
 
 let busy = false;
@@ -172,7 +173,41 @@ async function resolveViaGitHub() {
   return { latest, size: exeAsset.size, shaUrl: shaAsset.url, url: exeAsset.url, via: 'github' };
 }
 
-async function checkOnce({ isBusy, notify, manual = false, onProgress, requestedAt, getAuth } = {}) {
+// "schtasks /run" returning OK does not mean the script ran (seen on one computer: the update script
+// never started, every update there had to be installed by hand). So: 45 seconds later check that it
+// really started; if not, log the task's state, start the script directly through WMI (it does not
+// depend on Task Scheduler), and if even that fails, report the update as failed (log goes up by itself).
+function verifyUpdateStarted(latest, since) {
+  const bat = path.join(UPDATE_DIR, 'apply-update.bat');
+  const started = () => {
+    if (fs.existsSync(INSTALLING_LOCK)) return true;
+    try { return fs.statSync(EXIT_FILE).mtimeMs >= since; } catch (e) { return false; }
+  };
+  setTimeout(async () => {
+    if (started()) return;
+    let q = '';
+    try { q = await run('schtasks.exe', ['/query', '/tn', TASK_NAME, '/v', '/fo', 'list']); } catch (e) { q = `query failed: ${e.message}`; }
+    logger.log(`The update script did not start within 45s of the scheduled task being run. Task state: ${q.replace(/\s+/g, ' ').slice(0, 700)}`);
+    try {
+      fs.writeFileSync(LAUNCH_PS1,
+        `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'cmd.exe /c "${bat}"' }\r\n` +
+        `Write-Output ("WMI create: ReturnValue=" + $r.ReturnValue + " ProcessId=" + $r.ProcessId)\r\nexit [int]$r.ReturnValue\r\n`);
+      const out = await run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', LAUNCH_PS1]);
+      logger.log(`Started the update script directly (fallback): ${out.trim()}`);
+    } catch (e) {
+      logger.log(`Fallback start of the update script failed: ${e.message}`);
+    }
+    setTimeout(() => {
+      if (started()) return;
+      logger.log('The update script still did not start - giving up on this update (it will be retried).');
+      let rec = null;
+      try { rec = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch (e) { /* none */ }
+      if (rec && !rec.result) writeProgress({ ...rec, result: 'failed', error: 'מתזמן המשימות לא הפעיל את סקריפט העדכון (גם ההפעלה החלופית נכשלה)', finishedAt: Date.now() });
+    }, 45000);
+  }, 45000);
+}
+
+async function checkOnce({ isBusy, notify, manual = false, retry = false, onProgress, requestedAt, getAuth } = {}) {
   const t0 = requestedAt || Date.now();
   let progress = null;
   if (busy) return { result: 'busy', current: require('../package.json').version };
@@ -182,12 +217,12 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
     if (isBusy && isBusy()) return { result: 'busy', current };
     if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return { result: 'disabled', current };
     try {
-      const st = fs.statSync(INSTALLING_FLAG);
+      const st = fs.statSync(INSTALLING_LOCK);
       if (Date.now() - st.mtimeMs < INSTALLING_MAX_MS) {
         logger.log('An earlier update is still being installed - not starting another one now.');
         return { result: 'busy', current, reason: 'installing' };
       }
-      fs.rmSync(INSTALLING_FLAG, { force: true }); // stale (the .bat died)
+      fs.rmSync(INSTALLING_LOCK, { recursive: true, force: true }); // stale (the .bat died)
     } catch (e) { /* no update running */ }
 
     let src = null;
@@ -208,7 +243,7 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
     }
 
     const state = readState();
-    if (!manual && state.version === latest && Date.now() - (state.attemptedAt || 0) < RETRY_AFTER_MS) {
+    if (!manual && !retry && state.version === latest && Date.now() - (state.attemptedAt || 0) < RETRY_AFTER_MS) {
       return { result: 'skipped', current, latest };
     }
 
@@ -271,7 +306,10 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
       `& sc.exe start ContentBlockerAgent | Out-Null; exit 98`;
     fs.writeFileSync(bat, [
       '@echo off',
-      `echo %date% %time% >"${INSTALLING_FLAG}"`,
+      // Only one copy of this script may run (the scheduler and the fallback launcher can both start it).
+      `mkdir "${INSTALLING_LOCK}" 2>nul`,
+      'if errorlevel 1 exit /b 0',
+      `echo %date% %time% >"${INSTALLING_LOCK}\\started.txt"`,
       `echo [updater] %time% task started, launching the silent installer of ${latest} >>"${logFile}"`,
       runInstaller,
       'set RC=%errorlevel%',
@@ -284,7 +322,7 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
       `sc start ContentBlockerAgent >nul 2>&1`,
       `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
       `echo [updater] %time% update script finished >>"${logFile}"`,
-      `del /f /q "${INSTALLING_FLAG}" >nul 2>&1`,
+      `rmdir /s /q "${INSTALLING_LOCK}" >nul 2>&1`,
       `del /f /q "${exePath}" >nul 2>&1`,
       `schtasks /delete /tn ${TASK_NAME} /f >nul 2>&1`,
       ''
@@ -298,6 +336,7 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
     await run('schtasks.exe', ['/delete', '/tn', TASK_NAME, '/f']).catch(() => {});
     await run('schtasks.exe', ['/create', '/tn', TASK_NAME, '/sc', 'once', '/st', '23:59', '/ru', 'SYSTEM', '/rl', 'HIGHEST', '/f', '/tr', bat]);
     await run('schtasks.exe', ['/run', '/tn', TASK_NAME]);
+    verifyUpdateStarted(latest, Date.now());
     return { result: 'updating', current, latest };
   } catch (e) {
     logger.log(`Auto-update failed: ${e.message}`);
@@ -435,17 +474,27 @@ async function reportPending(send) {
 // Text for the dashboard when an update is stuck or failed: the installer's own log tail, its
 // exit code, the update state and the leftover files. Everything here is already readable by
 // the logged-in user (no secrets).
-function getInstallerDiagnostics() {
+function getInstallerDiagnostics(force) {
   const out = [];
-  const tail = (file, n) => {
-    try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join('\n'); } catch (e) { return ''; }
-  };
-  try { out.push('progress: ' + fs.readFileSync(PROGRESS_FILE, 'utf8')); } catch (e) { /* none */ }
-  try { out.push('installer exit code: ' + fs.readFileSync(EXIT_FILE, 'utf8').trim()); } catch (e) { /* none */ }
-  try { out.push('state: ' + fs.readFileSync(STATE_FILE, 'utf8')); } catch (e) { /* none */ }
-  try { out.push('files in update dir: ' + fs.readdirSync(UPDATE_DIR).map((f) => `${f} (${fs.statSync(path.join(UPDATE_DIR, f)).size}b)`).join(', ')); } catch (e) { /* none */ }
-  const setup = tail(path.join(UPDATE_DIR, 'setup.log'), 60);
-  if (setup) out.push('--- setup.log (last 60 lines) ---\n' + setup);
+  const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch (e) { return ''; } };
+  const progress = read(PROGRESS_FILE);
+  const state = read(STATE_FILE);
+  // Nothing in progress and nobody asked specifically about an update: send nothing extra.
+  if (!progress && !force) return '';
+  if (progress) out.push('progress: ' + progress);
+  const exit = read(EXIT_FILE).trim();
+  if (exit) out.push('installer exit code: ' + exit);
+  if (state) out.push('state: ' + state);
+  try {
+    out.push('update folder: ' + fs.readdirSync(UPDATE_DIR).map((f) => `${f} (${Math.round(fs.statSync(path.join(UPDATE_DIR, f)).size / 1024)}KB)`).join(', '));
+  } catch (e) { /* none */ }
+  out.push('update script started: ' + (fs.existsSync(INSTALLING_LOCK) ? 'yes (running now)' : 'not running now'));
+  // Installer log: only what explains a problem (errors, non-zero exit codes, the last lines).
+  const keep = /exit code [1-9]|exception|error|failed|denied|could not|rolled|Step:|Setup process|Installing version/i;
+  const setup = read(path.join(UPDATE_DIR, 'setup.log')).split(/\r?\n/).filter(Boolean);
+  const important = setup.filter((l) => keep.test(l)).slice(-15);
+  const tail = setup.slice(-6);
+  if (setup.length) out.push('--- setup.log (important lines + last 6) ---\n' + important.concat(tail.filter((l) => !important.includes(l))).join('\n'));
   return out.join('\n');
 }
 

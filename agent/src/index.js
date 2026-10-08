@@ -341,7 +341,7 @@ const AUTO_UPDATE_MAX_RETRIES = 8;       // then the regular 30-minute check tak
 const AUTO_UPDATE_RETRY_MS = 90 * 1000;  // release published but installer not uploaded yet, computer busy, short network error...
 
 function runAutoUpdate(latestVersion) {
-  updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth })
+  updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth, retry: autoUpdateRetries > 0 })
     .then((r) => {
       // Finished for good: update started, nothing to do, or switched off on purpose.
       if (!r || ['updating', 'uptodate', 'disabled', 'skipped'].includes(r.result)) { autoUpdateRetries = 0; return; }
@@ -372,8 +372,8 @@ const getAuth = () => ({ deviceId, deviceToken });
 async function uploadLogs(reason) {
   try {
     const status = await health.collect().catch((e) => `בדיקת המצב נכשלה: ${e.message}`);
-    let text = `${status}\n\n=== לוג אחרון ===\n${logger.getRecent(500)}`;
-    const extra = updater.getInstallerDiagnostics();
+    let text = `${status}\n\n=== לוג אחרון (24 שעות, בלי רעש) ===\n${logger.getRecent(150)}`;
+    const extra = updater.getInstallerDiagnostics(reason !== 'requested');
     if (extra) text += `\n\n=== אבחון עדכון ===\n${extra}`;
     await api.sendLogs(deviceId, deviceToken, text, reason);
     logger.log(`Log uploaded to the dashboard (${reason}).`);

@@ -79,7 +79,7 @@ async function collect() {
   else bad('האזנה בזמן אמת לא פעילה על אף כונן');
 
   // Recent problems in the log.
-  const recent = logger.getRecent(500).split('\n');
+  const recent = logger.getRecent(300).split('\n');
   const count = (re) => recent.filter((l) => re.test(l)).length;
   const alertsN = count(/\[ALERT\]/);
   const errN = count(/failed|error|Could not/i);

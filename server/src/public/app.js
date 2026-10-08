@@ -381,7 +381,8 @@ function renderDevices(allDevices) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${id}-logs.txt`;
+      const dv = lastDevices.find((x) => x.id === id) || {};
+      a.download = `מחשב-${dv.number || ''}-${(dv.name || id).replace(/[^\w\u0590-\u05FF-]+/g, '_')}-לוג.txt`;
       a.click();
       URL.revokeObjectURL(url);
     }));

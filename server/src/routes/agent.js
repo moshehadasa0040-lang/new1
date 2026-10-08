@@ -2,6 +2,7 @@ const express = require('express');
 const { nanoid } = require('nanoid');
 const store = require('../store');
 const { requireDevice } = require('../auth');
+const release = require('../release');
 
 const router = express.Router();
 
@@ -78,6 +79,7 @@ router.post('/update-report', requireDevice, async (req, res) => {
     wait_sec: num(b.waitSec),
     download_sec: num(b.downloadSec),
     install_sec: num(b.installSec),
+    gap_sec: num(b.gapSec), // how long the protection was off while the service restarted
     error: String(b.error || '').slice(0, 200)
   };
   await store.addUpdateRecord(req.device.id, rec);
@@ -86,6 +88,7 @@ router.post('/update-report', requireDevice, async (req, res) => {
   const parts = [];
   if (rec.download_sec !== null) parts.push(`הורדה ${fmtDuration(rec.download_sec)}`);
   if (rec.install_sec !== null) parts.push(`התקנה ${fmtDuration(rec.install_sec)}`);
+  if (rec.gap_sec !== null) parts.push(`הפסקת הגנה ~${fmtDuration(rec.gap_sec)}`);
   if (rec.result === 'success') {
     const total = rec.total_sec !== null ? `זמן כולל ${fmtDuration(rec.total_sec)}` : '';
     await store.addEvent(req.device.id, `העדכון הושלם: ${route}${total ? ' · ' + total : ''}${parts.length ? ' (' + parts.join(', ') + ')' : ''}`);
@@ -119,8 +122,30 @@ router.post('/heartbeat', requireDevice, async (req, res) => {
     unlockedUntil: device.unlocked_until || null,
     // The agent shows this number in its tray icon menu / About window.
     deviceNumber: Number(device.number),
+    // Newest published agent version (cached; never blocks the heartbeat on GitHub).
+    latestVersion: release.peekLatestVersion(),
     commands
   });
+});
+
+// The agent downloads its updates from here instead of from GitHub: no GitHub rate limit
+// (one lookup serves all computers) and it works on networks that filter GitHub.
+router.get('/update-info', requireDevice, async (req, res) => {
+  try {
+    const i = await release.getLatest();
+    res.json({ version: i.version, size: i.size, sha256: i.sha256, ready: !!(i.assetUrl && i.sha256) });
+  } catch (e) {
+    res.status(502).json({ error: 'github_unreachable' });
+  }
+});
+
+router.get('/installer', requireDevice, async (req, res) => {
+  try {
+    await release.streamInstaller(res);
+  } catch (e) {
+    if (!res.headersSent) res.status(502).json({ error: e.message || 'download_failed' });
+    else res.destroy();
+  }
 });
 
 // POST /api/agent/ack

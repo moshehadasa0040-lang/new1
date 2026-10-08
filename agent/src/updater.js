@@ -34,6 +34,7 @@ const STATE_FILE = path.join(UPDATE_DIR, 'state.json');
 const PROGRESS_FILE = path.join(UPDATE_DIR, 'progress.json');
 const EXIT_FILE = path.join(UPDATE_DIR, 'installer-exit.txt');
 const LAST_INSTALL_FILE = path.join(UPDATE_DIR, 'last-install.txt'); // written by setup.iss
+const STOP_FILE = path.join(UPDATE_DIR, 'last-stop.txt'); // written by the old agent when asked to stop
 
 let busy = false;
 
@@ -72,7 +73,7 @@ function run(file, args) {
   });
 }
 
-async function download(url, dest, expectedSize) {
+async function download(url, dest, expectedSize, headers) {
   // Accept: application/octet-stream makes the GitHub REST *asset* endpoint
   // (api.github.com/repos/.../releases/assets/<id>, as opposed to the
   // browser-facing github.com/.../releases/download/... link) respond with a
@@ -85,7 +86,7 @@ async function download(url, dest, expectedSize) {
     responseType: 'stream',
     timeout: 120000,
     maxRedirects: 5,
-    headers: { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
+    headers: headers || { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
   });
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(dest);
@@ -139,7 +140,35 @@ function writeProgress(rec) {
   try { fs.mkdirSync(UPDATE_DIR, { recursive: true }); fs.writeFileSync(PROGRESS_FILE, JSON.stringify(rec)); } catch (e) { /* ignore */ }
 }
 
-async function checkOnce({ isBusy, notify, manual = false, onProgress, requestedAt } = {}) {
+// Where does the update come from? First the dashboard server: it caches the GitHub lookup
+// (30 computers must not burn GitHub's 60 anonymous calls/hour per IP) and it keeps working
+// where api.github.com is filtered. Only if the server cannot answer, GitHub is asked directly.
+async function resolveViaServer(auth) {
+  const headers = { 'X-Device-Id': auth.deviceId, 'X-Device-Token': auth.deviceToken };
+  const r = await axios.get(`${config.SERVER_URL}/api/agent/update-info`, { timeout: 20000, headers });
+  const d = r.data || {};
+  if (!d.version) throw new Error('no version in the answer');
+  if (!d.ready) return { latest: d.version, incomplete: true };
+  return { latest: d.version, size: d.size, hash: d.sha256, url: `${config.SERVER_URL}/api/agent/installer`, headers, via: 'server' };
+}
+
+async function resolveViaGitHub() {
+  // Every GitHub call uses only api.github.com, never github.com - see the note in download().
+  const apiBase = `https://api.github.com/repos/${config.UPDATE_REPO}/releases/assets/`;
+  const rel = await axios.get(`https://api.github.com/repos/${config.UPDATE_REPO}/releases/latest`, {
+    timeout: 20000,
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'content-blocker-agent' }
+  });
+  const latest = String(rel.data.tag_name || '').replace(/^v/, '');
+  const exeAsset = (rel.data.assets || []).find((a) => a.name === ASSET);
+  const shaAsset = (rel.data.assets || []).find((a) => a.name === `${ASSET}.sha256`);
+  if (!exeAsset || !shaAsset) return { latest, incomplete: true };
+  // Only ever download assets that belong to this exact repo's releases.
+  if (!String(exeAsset.url).startsWith(apiBase) || !String(shaAsset.url).startsWith(apiBase)) return { latest, badUrl: true };
+  return { latest, size: exeAsset.size, shaUrl: shaAsset.url, url: exeAsset.url, via: 'github' };
+}
+
+async function checkOnce({ isBusy, notify, manual = false, onProgress, requestedAt, getAuth } = {}) {
   const t0 = requestedAt || Date.now();
   let progress = null;
   if (busy) return { result: 'busy', current: require('../package.json').version };
@@ -149,24 +178,19 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
     if (isBusy && isBusy()) return { result: 'busy', current };
     if (fs.existsSync(path.join(path.dirname(process.execPath), 'no-auto-update.txt'))) return { result: 'disabled', current };
 
-    // Every GitHub call below uses only api.github.com, never github.com -
-    // see the note in download() for why.
-    const apiBase = `https://api.github.com/repos/${config.UPDATE_REPO}/releases/assets/`;
-    const rel = await axios.get(`https://api.github.com/repos/${config.UPDATE_REPO}/releases/latest`, {
-      timeout: 20000,
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'content-blocker-agent' }
-    });
-    const latest = String(rel.data.tag_name || '').replace(/^v/, '');
+    let src = null;
+    const auth = getAuth ? getAuth() : null;
+    if (auth && auth.deviceId) {
+      try { src = await resolveViaServer(auth); } catch (e) { logger.log(`Update info from the server unavailable (${e.message}) - asking GitHub directly.`); }
+    }
+    if (!src) src = await resolveViaGitHub();
+    const latest = src.latest;
     if (!isNewer(latest, current)) return { result: 'uptodate', current, latest };
-
-    const exeAsset = (rel.data.assets || []).find((a) => a.name === ASSET);
-    const shaAsset = (rel.data.assets || []).find((a) => a.name === `${ASSET}.sha256`);
-    if (!exeAsset || !shaAsset) {
-      logger.log(`Update ${latest} found but the release is missing the installer or its .sha256 - skipping.`);
+    if (src.incomplete) {
+      logger.log(`Update ${latest} found but the release is missing the installer or its SHA-256 - skipping.`);
       return { result: 'incomplete', current, latest };
     }
-    // Only ever download assets that belong to this exact repo's releases.
-    if (!String(exeAsset.url).startsWith(apiBase) || !String(shaAsset.url).startsWith(apiBase)) {
+    if (src.badUrl) {
       logger.log('Update skipped: asset URL is not from the configured repository.');
       return { result: 'failed', current, latest, reason: 'other', message: 'asset URL is not from the configured repository' };
     }
@@ -176,22 +200,25 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
       return { result: 'skipped', current, latest };
     }
 
-    logger.log(`Update available: ${current} -> ${latest}. Downloading...`);
+    logger.log(`Update available: ${current} -> ${latest}. Downloading (from ${src.via === 'server' ? 'the dashboard server' : 'GitHub'})...`);
     progress = { from: current, to: latest, trigger: manual ? 'dashboard' : 'auto', requestedAt: t0, downloadStartedAt: Date.now() };
     writeProgress(progress);
     if (onProgress) { try { onProgress('downloading', { current, latest }); } catch (e) { /* ignore */ } }
     writeState({ version: latest, attemptedAt: Date.now() });
     fs.mkdirSync(UPDATE_DIR, { recursive: true });
 
-    const shaText = (await axios.get(shaAsset.url, {
-      timeout: 20000, responseType: 'text',
-      headers: { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
-    })).data;
-    const expectedHash = (/[0-9a-fA-F]{64}/.exec(String(shaText)) || [])[0];
-    if (!expectedHash) throw new Error('could not read the SHA-256 file');
+    let expectedHash = src.hash;
+    if (!expectedHash) {
+      const shaText = (await axios.get(src.shaUrl, {
+        timeout: 20000, responseType: 'text',
+        headers: { 'User-Agent': 'content-blocker-agent', Accept: 'application/octet-stream' }
+      })).data;
+      expectedHash = (/[0-9a-fA-F]{64}/.exec(String(shaText)) || [])[0];
+    }
+    if (!expectedHash) throw new Error('could not read the SHA-256 of the installer');
 
     const exePath = path.join(UPDATE_DIR, `ContentBlockerAgent-Setup-${latest}.exe`);
-    await download(exeAsset.url, exePath, exeAsset.size);
+    await download(src.url, exePath, src.size, src.headers);
     const actual = await sha256File(exePath);
     if (actual.toLowerCase() !== expectedHash.toLowerCase()) {
       fs.rmSync(exePath, { force: true });
@@ -215,13 +242,32 @@ async function checkOnce({ isBusy, notify, manual = false, onProgress, requested
       `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath '${exePath}' ` +
       `-ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/LOG=${setupLog}' -PassThru; ` +
       `if (-not $p.WaitForExit(600000)) { & taskkill.exe /f /t /pid $p.Id | Out-Null; Get-Process | Where-Object { $_.Name -like 'ContentBlockerAgent-Setup*' } | Stop-Process -Force -ErrorAction SilentlyContinue; exit 99 } else { exit $p.ExitCode }"`;
+    // After a successful in-place install: wait up to ~3.5 minutes for the NEW agent to report
+    // its version in status.txt. If it never does (crashing / not starting), the old files that
+    // the installer moved aside (*.old) are put back and the service is started again, so a bad
+    // release can never leave a computer without protection. Exit code 98 = rolled back.
+    const statusTxt = path.join(config.LOG_DIR, 'status.txt');
+    const healthCheck =
+      `$d='${installDir}'; if (-not (Test-Path (Join-Path $d 'content-blocker-agent.exe.old'))) { exit 0 }; ` +
+      `$ok=$false; for ($i=0; $i -lt 42; $i++) { Start-Sleep 5; ` +
+      `$m = Select-String -Path '${statusTxt}' -Pattern '^version=(.+)$' -ErrorAction SilentlyContinue; ` +
+      `if ($m -and $m.Matches[0].Groups[1].Value.Trim() -eq '${latest}') { $ok=$true; break } }; ` +
+      `if ($ok) { exit 0 }; ` +
+      `& sc.exe stop ContentBlockerAgent | Out-Null; Start-Sleep 5; & taskkill.exe /f /im content-blocker-agent.exe 2>&1 | Out-Null; ` +
+      `Move-Item -Force (Join-Path $d 'content-blocker-agent.exe.old') (Join-Path $d 'content-blocker-agent.exe'); ` +
+      `if (Test-Path (Join-Path $d 'nssm.exe.old')) { Move-Item -Force (Join-Path $d 'nssm.exe.old') (Join-Path $d 'nssm.exe') }; ` +
+      `& sc.exe start ContentBlockerAgent | Out-Null; exit 98`;
     fs.writeFileSync(bat, [
       '@echo off',
       `echo [updater] starting silent install of ${latest} >>"${logFile}"`,
       runInstaller,
+      'set RC=%errorlevel%',
       // The space before ">" matters here too ("0>" would be a handle redirect).
-      `echo %errorlevel% >"${EXIT_FILE}"`,
-      `echo [updater] installer exit code %errorlevel% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
+      `echo %RC% >"${EXIT_FILE}"`,
+      `echo [updater] installer exit code %RC% - 0 is success, 99 means it hung for 10 minutes and was stopped >>"${logFile}"`,
+      `if "%RC%"=="0" powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "${healthCheck}"`,
+      `if "%errorlevel%"=="98" echo 98 >"${EXIT_FILE}"`,
+      `if "%errorlevel%"=="98" echo [updater] ROLLBACK: the new version did not come up in time, the previous version was restored >>"${logFile}"`,
       `sc start ContentBlockerAgent >nul 2>&1`,
       `schtasks /create /tn ContentBlockerWatchdog /sc minute /mo 1 /ru SYSTEM /rl HIGHEST /f /tr "\\"${path.join(installDir, 'watchdog.bat')}\\"" >nul 2>&1`,
       `del /f /q "${exePath}" >nul 2>&1`,
@@ -340,7 +386,7 @@ async function reportPending(send) {
   } else if (rec && rec.installStartedAt) {
     if (exit && exit.at >= rec.installStartedAt - 1000 && exit.value !== 0) {
       out = { from: rec.from, to: rec.to, trigger: rec.trigger, result: 'failed',
-        error: exit.value === 99 ? 'ההתקנה נתקעה ונעצרה אחרי 10 דקות (כנראה קובץ נעול)' : `ההתקנה הסתיימה עם קוד שגיאה ${exit.value}`,
+        error: exit.value === 99 ? 'ההתקנה נתקעה ונעצרה אחרי 10 דקות (כנראה קובץ נעול)' : exit.value === 98 ? 'הגרסה החדשה לא עלתה תוך כ-3 דקות, והמחשב הוחזר אוטומטית לגרסה הקודמת' : `ההתקנה הסתיימה עם קוד שגיאה ${exit.value}`,
         waitSec: sec(rec.requestedAt, rec.downloadStartedAt), downloadSec: sec(rec.downloadStartedAt, rec.installStartedAt),
         installSec: sec(rec.installStartedAt, exit.at), totalSec: sec(rec.requestedAt, exit.at) };
     } else if (now - rec.installStartedAt > 25 * 60 * 1000) {
@@ -352,8 +398,19 @@ async function reportPending(send) {
     out = { from: '', to: current, trigger: 'unknown', result: 'success', installSec: inst.seconds };
   }
   if (!out) return;
+  if (out.result === 'success') {
+    // How long was the protection off? From the old agent's last breath (written when the
+    // service is asked to stop) to the start of this process; the few seconds this agent needs
+    // to initialise come on top. Unknown (null) if the old process was killed without a stamp.
+    try {
+      const stop = parseInt(fs.readFileSync(STOP_FILE, 'utf8'), 10);
+      const startedAt = now - process.uptime() * 1000;
+      if (Number.isFinite(stop) && startedAt - stop < 10 * 60 * 1000) out.gapSec = Math.max(0, Math.round((startedAt - stop) / 1000));
+    } catch (e) { /* no stamp */ }
+  }
   try {
     await send(out);
+    try { fs.rmSync(STOP_FILE, { force: true }); } catch (e) { /* ignore */ }
     [PROGRESS_FILE, EXIT_FILE, LAST_INSTALL_FILE].forEach((f) => { try { fs.rmSync(f, { force: true }); } catch (e) { /* ignore */ } });
   } catch (e) {
     logger.log(`Could not send the update report yet (${e.message}); will retry.`);
@@ -379,4 +436,4 @@ function describeResult(r) {
   }
 }
 
-module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending };
+module.exports = { start, checkOnce, isNewer, parseVersion, describeResult, reportPending, STOP_FILE };

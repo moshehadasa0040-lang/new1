@@ -379,7 +379,7 @@ function lastUpdateLine(d) {
   const when = r.at ? new Date(r.at).toLocaleString('he-IL') : '';
   const route = r.from ? `${escapeHtml(r.from)} ← ${escapeHtml(r.to)}` : `גרסה ${escapeHtml(r.to)}`;
   if (r.result === 'success') {
-    return `<div class="update-line">עדכון אחרון: ${route} · הצליח · ${fmtDur(r.total_sec !== null ? r.total_sec : r.install_sec)}${r.total_sec !== null && r.install_sec !== null ? ` (התקנה ${fmtDur(r.install_sec)})` : ''} · ${when}</div>`;
+    return `<div class="update-line">עדכון אחרון: ${route} · הצליח · ${fmtDur(r.total_sec !== null ? r.total_sec : r.install_sec)}${r.total_sec !== null && r.install_sec !== null ? ` (התקנה ${fmtDur(r.install_sec)})` : ''}${r.gap_sec !== null && r.gap_sec !== undefined ? ` · הגנה הופסקה ~${fmtDur(r.gap_sec)}` : ''} · ${when}</div>`;
   }
   return `<div class="update-line update-failed">עדכון אחרון נכשל: ${route}${r.error ? ' · ' + escapeHtml(r.error) : ''} · ${when}</div>`;
 }
@@ -409,9 +409,9 @@ async function openUpdatesReport() {
       <td>${escapeHtml(r.device_name)}</td>
       <td>${r.from ? escapeHtml(r.from) + ' ← ' : ''}${escapeHtml(r.to)}</td>
       <td>${r.result === 'success' ? 'הצליח' : '<span style="color:#a32d2d">נכשל</span>' + (r.error ? ' · ' + escapeHtml(r.error) : '')}</td>
-      <td>${fmtDur(r.total_sec)}</td><td>${fmtDur(r.download_sec)}</td><td>${fmtDur(r.install_sec)}</td>
+      <td>${fmtDur(r.total_sec)}</td><td>${fmtDur(r.download_sec)}</td><td>${fmtDur(r.install_sec)}</td><td>${r.gap_sec === null || r.gap_sec === undefined ? '-' : fmtDur(r.gap_sec)}</td>
       <td>${trig[r.trigger] || ''}</td><td>${new Date(r.at).toLocaleString('he-IL')}</td></tr>`).join('');
-    box.innerHTML = stat + `<table class="report-table"><thead><tr><th>מחשב</th><th>גרסה</th><th>תוצאה</th><th>זמן כולל</th><th>הורדה</th><th>התקנה</th><th>הופעל</th><th>מתי</th></tr></thead><tbody>${trs}</tbody></table>`;
+    box.innerHTML = stat + `<table class="report-table"><thead><tr><th>מחשב</th><th>גרסה</th><th>תוצאה</th><th>זמן כולל</th><th>הורדה</th><th>התקנה</th><th>הפסקת הגנה</th><th>הופעל</th><th>מתי</th></tr></thead><tbody>${trs}</tbody></table>`;
   } catch (e) {
     statusEl.textContent = 'לא הצלחתי לטעון את הדוח';
   }

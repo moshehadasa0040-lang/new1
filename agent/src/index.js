@@ -136,6 +136,18 @@ let lastHeartbeatOk = null; // null = unknown yet; used to log only on state CHA
 // (periodic lock scan, heartbeat, 401 re-registration) is allowed to
 // re-lock files or re-register the device while the unlock sweep runs.
 let uninstalling = false;
+
+// When the service is stopped for an update (nssm sends Ctrl+C), leave a time stamp: the NEW
+// agent subtracts it from its own start time to report how long the protection was off.
+['SIGINT', 'SIGTERM', 'SIGBREAK'].forEach((sig) => {
+  process.on(sig, () => {
+    try {
+      fs.mkdirSync(path.dirname(updater.STOP_FILE), { recursive: true });
+      fs.writeFileSync(updater.STOP_FILE, String(Date.now()));
+    } catch (e) { /* ignore */ }
+    process.exit(0);
+  });
+});
 // Short human-friendly computer number assigned by the server (1, 2, 3...).
 // Shown in the tray icon menu / About so people can say "computer 7" when
 // asking for an unlock. The server is the source of truth; we cache it.
@@ -261,6 +273,7 @@ async function applyCommand(cmd) {
             isBusy: () => uninstalling,
             manual: true,
             requestedAt,
+            getAuth,
             // Reported BEFORE the installer stops this service - afterwards it cannot.
             onProgress: (stage, info) => { if (stage === 'updating') say(updater.describeResult({ result: 'updating', ...info })); }
           });
@@ -322,10 +335,28 @@ async function applyCommand(cmd) {
   }
 }
 
+// The server tells us the newest version in every heartbeat answer, so a new release is picked up
+// within about a minute without every computer polling GitHub. The random delay spreads a whole
+// computer room over a couple of minutes instead of all downloading in the same second; the
+// "Update agent" button in the dashboard skips it.
+let autoUpdateSeen = '';
+function maybeAutoUpdate(latestVersion) {
+  if (!latestVersion || uninstalling || latestVersion === autoUpdateSeen) return;
+  if (!updater.isNewer(latestVersion, require('../package.json').version)) return;
+  autoUpdateSeen = latestVersion; // once per version; failures are retried by the 30-minute check
+  const delayMs = Math.floor(Math.random() * 90 * 1000);
+  logger.log(`Server reports version ${latestVersion} - checking for the update in ${Math.round(delayMs / 1000)}s.`);
+  setTimeout(() => {
+    updater.checkOnce({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth }).catch(() => {});
+  }, delayMs);
+}
+
+const getAuth = () => ({ deviceId, deviceToken });
+
 async function heartbeatLoop() {
   if (uninstalling) return;
   try {
-    const { unlockedUntil, commands, deviceNumber: num } = await api.heartbeat(deviceId, deviceToken);
+    const { unlockedUntil, commands, deviceNumber: num, latestVersion } = await api.heartbeat(deviceId, deviceToken);
     rememberDeviceNumber(num);
     if (lastHeartbeatOk !== true) {
       logger.log(lastHeartbeatOk === false ? 'Server connection restored (heartbeat OK).' : 'First heartbeat OK - connected to server.');
@@ -350,6 +381,7 @@ async function heartbeatLoop() {
     for (const cmd of commands) {
       await applyCommand(cmd);
     }
+    maybeAutoUpdate(latestVersion);
     writeCurrentStatus();
   } catch (err) {
     if (err.response && err.response.status === 401) {
@@ -462,7 +494,7 @@ async function main() {
   await heartbeatLoop();
   setInterval(heartbeatLoop, config.HEARTBEAT_INTERVAL_MS);
   // Self-update from the latest GitHub Release (see updater.js).
-  updater.start({ isBusy: () => uninstalling, notify: (m) => alerts.report(m) });
+  updater.start({ isBusy: () => uninstalling, notify: (m) => alerts.report(m), getAuth });
   // Update report for the dashboard (how long the last update took / why it failed).
   const sendUpdateReport = (rep) => api.updateReport(deviceId, deviceToken, rep);
   setTimeout(() => updater.reportPending(sendUpdateReport).catch(() => {}), 5 * 1000);

@@ -98,7 +98,7 @@ function canRemoteUpdate(d) {
 // do not hit GitHub's anonymous API limit (60/hour per IP) at the same moment.
 router.post('/devices/update-outdated', requireAdmin, async (req, res) => {
   let latest;
-  try { latest = (await release.getLatest()).version; } catch (e) { return res.status(502).json({ error: 'github_unreachable' }); }
+  try { latest = (await release.getLatest({ force: true })).version; } catch (e) { return res.status(502).json({ error: 'github_unreachable' }); }
   const now = Date.now();
   const rows = await store.listDevices();
   const targets = rows.filter((d) =>
@@ -116,6 +116,7 @@ router.post('/devices/update-outdated', requireAdmin, async (req, res) => {
 });
 
 router.post('/devices/:id/update', requireAdmin, async (req, res) => {
+  await release.getLatest({ force: true }).catch(() => {}); // the agent will ask this server for the version: make sure it is fresh
   await store.queueCommand(req.params.id, 'update', { delaySec: 0 });
   await store.addEvent(req.params.id, 'התבקש עדכון הסוכן מהדשבורד');
   res.json({ ok: true });
